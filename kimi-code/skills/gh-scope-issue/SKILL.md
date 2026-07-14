@@ -115,7 +115,12 @@ Adapted from SpaceX's engineering algorithm. Apply all five, in order, and recor
 ### Phase 3 — Investigate the codebase
 
 1. Read `AGENTS.md`. For any touched subsystem, follow its doc routing (`AI_DOCS_INDEX.md`; e.g. read `docs/d_FLEX_TRADE_RULES.md` before proposing changes to `core/services/` or `core/portfolio/`).
-2. Spawn one or two **explore subagents** with precise questions — one question per agent, e.g.:
+2. **Documentation fit checkpoint.** For every code area the ticket touches, look up its primary doc in `docs/AI_DOCS_INDEX.md`. Record each primary doc and answer:
+   - Does this change alter a documented assumption, row shape, invariant, or external-API mapping?
+   - If yes, the ticket must include updating the primary doc or adding `BUSINESS RULE:` / `NOTE:` comments that link to it.
+   - If no primary doc exists for a touched area, the ticket should add one to `AI_DOCS_INDEX.md` (and create the doc if the area is non-trivial).
+   - If the change is purely mechanical and touches no documented contract, note "no doc impact."
+3. Spawn one or two **explore subagents** with precise questions — one question per agent, e.g.:
    - "Find every code path that lets a user add an option contract to the compare view. For each: `file:line`, trigger, required data."
    - "How does SnapTrade sync currently merge fetched positions into the persisted snapshot? Report the merge function, where partial/degraded fetch responses are detected (if anywhere), and `file:line` for each."
    In non-interactive mode run them in the background and wait with `TaskOutput(block=true)`.
@@ -163,6 +168,9 @@ Write the body to `~/.kimi-code/tmp/scoped-issue-<N>.md` (create the dir if need
 
 ## Architecture fit
 [Canonical module per AGENTS.md that owns this; why this extends it rather than adding a parallel path; why the fix belongs in this layer — the one that owns the violated invariant.]
+
+## Documentation fit
+[Primary docs for touched code areas from `docs/AI_DOCS_INDEX.md`; what doc updates or `BUSINESS RULE:` / `NOTE:` comments are required; whether a new primary doc is needed. Explicitly state "no doc impact" if the change touches no documented contract.]
 
 ## File change matrix
 | File | Action | Why |
@@ -217,6 +225,7 @@ Every run ends in exactly one of:
 Report at the end:
 - Issue number, title, URL, and outcome (one of the four above)
 - Premise verdicts: what was confirmed, what was wrong (with `file:line`); whether the fix targets the root cause (origin) or a symptom
+- Documentation fit: primary docs for touched areas from `docs/AI_DOCS_INDEX.md`, required doc updates or comments, or "no doc impact"
 - What was deleted from scope (question 2) — or why nothing could be
 - Estimate and the canonical module the fix should live in
 - Card status (moved to X / not moved + reason)
