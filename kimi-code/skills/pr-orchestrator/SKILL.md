@@ -249,15 +249,17 @@ Do not proceed to the test gate without a clean review.
      - `http://localhost:<DEV_API_PORT>`
    - If both respond, skip starting and record `started_dev_stack = false`.
    - Otherwise, record `started_dev_stack = true` and start it from the `webapp/` directory:
-     - `Bash` command: `cd webapp && pnpm dev:stack`
+     - `Bash` command: `cd webapp && ALLOW_TEST_HELPERS=true pnpm dev:stack`
      - `run_in_background: true`
+     - `disable_timeout: true` — the suite runs ~40 min; the default 600s background timeout would kill the stack mid-run.
      - `description: "dev stack for pnpm test:all"`
+   - `ALLOW_TEST_HELPERS=true` is mandatory: the e2e suite calls `/api/test-utils/*` routes, which refuse to run without it (checked in the dev server process — an already-running stack must also have been started with the flag; restart it if unsure).
    - Wait for the stack to be ready:
      - Poll both ports until they respond, up to 90 seconds.
      - If they do not become ready, stop the background task, post a failure comment, and abort.
 3. **Run the test pipeline**:
-   - `Bash` command: `cd webapp && pnpm test:all`
-   - In non-interactive mode, run it as a background `Bash` task with `disable_timeout=true` and wait for it with `TaskOutput(block=true)`.
+   - Always run it as a background `Bash` task: `cd webapp && pnpm test:all`, with `run_in_background: true`, `disable_timeout: true`, and `description: "pnpm test:all"`. (Foreground `Bash` caps at 300s; the suite takes ~40 min.)
+   - In non-interactive mode, wait for it with `TaskOutput(block=true)`. In interactive mode, tell the user the suite is running in the background and wait for the completion notification.
 4. **Stop the dev stack** if we started it:
    - Use `TaskStop` on the dev-stack background task.
    - Run a port cleanup command to ensure no stray processes remain:
@@ -269,7 +271,7 @@ Do not proceed to the test gate without a clean review.
 6. If tests fail:
    - Post the failure summary as a PR comment.
    - Spawn a coder subagent to fix the failures.
-   - Re-run `pnpm test:all` (restarting the dev stack if needed).
+   - Re-run `pnpm test:all` the same way as step 3 (background task; restart the dev stack per step 2 if needed).
    - Repeat up to 2 more times. If still failing, stop and report the failures to the user.
 7. Mark "Test gate" done.
 
