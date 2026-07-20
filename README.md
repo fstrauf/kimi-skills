@@ -16,6 +16,7 @@ Version-controlled home for my Kimi Code / agent skills.
 - `feature-spec-to-github-issue` — turn a bug report / feature request into a structured GitHub issue with root-cause analysis
 - `gh-scope-issue` — refine a rough GitHub issue from the board's Scoping column into a build-ready spec
 - `kimi-webbridge` — browser automation using the user's real browser sessions
+- `storage-sweep` — guided macOS storage cleanup for dev machines: read-only scan of caches and stale artifacts, tiered report, confirm-then-clean with standard tool commands; includes a generic AI-session pruner (`prune-sessions.sh`, 14-day default)
 
 ## How it works
 
