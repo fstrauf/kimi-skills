@@ -288,7 +288,7 @@ Walk changed frontend UI surfaces with Playwright MCP. **v1 is advisory only** �
 4. **Ensure auth storage state** (dev stack must still be up from Phase 5):
    - Path: `webapp/.playwright/e2e-user.json` (gitignored).
    - If missing or a later MCP session returns 401: `cd webapp && pnpm e2e:save-auth` (needs `E2E_TEST_USER_PASSWORD` in `webapp/.env.local`).
-   - Playwright MCP is registered with `--storage-state=.../webapp/.playwright/e2e-user.json` and `--caps=devtools`.
+   - Playwright MCP is registered with `--isolated` (mandatory — the default persistent profile applies `--storage-state` only to a fresh profile, silently ignoring refreshes), `--storage-state=.../webapp/.playwright/e2e-user.json`, and `--caps=devtools`.
 5. **Execute via Playwright MCP**: navigate each checklist step; assert no hard error/blank shell; screenshot each step under `.tmp/ui-gate/<pr-number>/` (create dirs as needed; tmp/gitignored — do not commit).
 6. **Report** a PR comment that includes:
    - Explicit label: **advisory**
