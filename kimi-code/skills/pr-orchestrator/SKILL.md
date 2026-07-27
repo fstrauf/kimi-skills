@@ -72,6 +72,7 @@ These limits override any other instruction in this skill or any invoked skill:
    - Open draft PR
    - Review loop
    - Test gate
+   - UI verification gate (advisory)
    - Real-user QA safety check
    - Mark PR ready
 
@@ -235,7 +236,7 @@ Do not proceed to the test gate without a clean review.
 
 ### Phase 5 — Test gate
 
-`pnpm test:all` requires the local dev stack (Next.js frontend + Python API) to be running. This phase starts it, runs the tests, and then stops it.
+`pnpm test:all` requires the local dev stack (Next.js frontend + Python API) to be running. This phase starts it (if needed) and runs the tests. **Do not tear down the stack here** — Phase 6 (UI gate) needs it; stop only after that phase finishes.
 
 1. Update `TodoList`: mark "Review loop" done, "Test gate" in-progress.
 2. **Start the dev stack** (only if not already running):
@@ -260,13 +261,7 @@ Do not proceed to the test gate without a clean review.
 3. **Run the test pipeline**:
    - Always run it as a background `Bash` task: `cd webapp && pnpm test:all`, with `run_in_background: true`, `disable_timeout: true`, and `description: "pnpm test:all"`. (Foreground `Bash` caps at 300s; the suite takes ~40 min.)
    - In non-interactive mode, wait for it with `TaskOutput(block=true)`. In interactive mode, tell the user the suite is running in the background and wait for the completion notification.
-4. **Stop the dev stack** if we started it:
-   - Use `TaskStop` on the dev-stack background task.
-   - Run a port cleanup command to ensure no stray processes remain:
-     ```bash
-     kill -9 $(lsof -ti :<DEV_FRONTEND_PORT>) $(lsof -ti :<DEV_API_PORT>) 2>/dev/null || true
-     ```
-   - Only run the port cleanup if `started_dev_stack` is `true`. If the stack was already running when you checked, do not kill the ports.
+4. **Keep the dev stack running** for Phase 6. Record `started_dev_stack` so Phase 6 can stop it after the UI gate if this phase started it.
 5. If tests pass, post a comment: `gh pr comment <pr_number> --body "✅ pnpm test:all passed."`
 6. If tests fail:
    - Post the failure summary as a PR comment.
@@ -275,51 +270,216 @@ Do not proceed to the test gate without a clean review.
    - Repeat up to 2 more times. If still failing, stop and report the failures to the user.
 7. Mark "Test gate" done.
 
-### Phase 6 — Real-user QA safety check (conditional)
+### Phase 6 — UI verification gate (advisory)
 
-This is the final automated safety gate before the PR is considered ready. It runs the rule-based pipeline integrity checks from `docs/d_USER_TESTING_GUIDE.md` against real user data. **The gate only applies when the diff can affect the portfolio data pipeline.** On frontend/docs-only PRs, stopping with "no QA email found" is noise — skip the gate explicitly instead.
+Walk changed frontend UI surfaces with Playwright MCP. **v1 is advisory only** — never block `gh pr ready`, never spawn fix-and-retry for a UI FAIL. Contract: `docs/d_USER_TESTING_GUIDE.md` → "UI verification gate (advisory)".
 
-1. Update `TodoList`: mark "Test gate" done, "Real-user QA safety check" in-progress.
-2. **Classify the diff.** List changed files and check whether any can affect the portfolio data pipeline:
+1. Update `TodoList`: mark "Test gate" done, "UI verification gate (advisory)" in-progress.
+2. **Classify the diff** for frontend UI surfaces:
    ```bash
    git diff --name-only origin/main...HEAD 2>/dev/null || git diff --name-only origin/master...HEAD
    ```
-   Pipeline-affecting paths: `core/`, `api/`, `ops/`, `tests/golden/`, `scripts/qa_pipeline_integrity.py`. Everything else (webapp UI, docs, chrome extension) is not. When in doubt, treat as pipeline-affecting.
-3. **If no pipeline-affecting files changed:** skip the gate. Post a PR comment: `ℹ️ Real-user QA skipped — no pipeline-affecting files changed (frontend/docs only).` Mark "Real-user QA safety check" done and proceed to Phase 7.
-4. **If pipeline-affecting files changed, extract the QA user email from the original GitHub issue.** Search the issue title and body for an email address (e.g. `user@example.com` or a `QA user: <email>` line — the scoping workflow adds one for pipeline tickets).
-5. If no email is found, STOP and report: "Pipeline-affecting changes but no QA user email found in issue #<number>. Add a line `QA user: <email>` to the issue body and re-run." Do not mark the PR ready.
-6. Ensure `DATABASE_URL` is available. If it is not set in the environment, load it from `api/.env`:
-   ```bash
-   export DATABASE_URL=$(grep DATABASE_URL api/.env | cut -d'"' -f2)
-   ```
-7. Run the pipeline integrity checks for Tier 1 (key) users:
-   ```bash
-   uv run python scripts/qa_pipeline_integrity.py --tier 1 --business-logic-only --ci
-   ```
-8. Run the pipeline integrity check for the user specified in the issue:
-   ```bash
-   uv run python scripts/qa_pipeline_integrity.py --email <extracted-email> --business-logic-only --ci
-   ```
-9. **Interpret the results** based on `docs/d_USER_TESTING_GUIDE.md`:
-   - `ALL_CLEAR`: all checks passed. Continue.
-   - `OK_WITH_WARNINGS`: only WARNs, no FAILs. Continue, but post the warnings to the PR as a non-blocking note.
-   - `INVESTIGATE`: at least one FAIL. STOP. Do not mark the PR ready. Post the failures to the PR and report to the user.
-10. Common expected WARNs (B6, B7, B9, D4) may appear in `OK_WITH_WARNINGS`. Do not treat these as blockers unless they are new or extreme.
-11. If any check exits non-zero, treat it as `INVESTIGATE` and stop.
-12. Mark "Real-user QA safety check" done.
+   Count as UI surface if any path matches pages/components/app routes under `webapp/src/**` (e.g. `webapp/src/app/**`, `webapp/src/components/**`, feature UI under `webapp/src/components/features/**`). Ignore pure docs, Python/API-only, lockfile-only, tests-only, and non-UI `webapp/` scripts.
+   - If none match → `gh pr comment`: `ℹ️ UI gate skipped — no frontend UI changes`. Mark "UI verification gate (advisory)" done, tear down stack if `started_dev_stack` (step 8), proceed to Phase 7.
+3. **Build a short checklist** of flows to walk:
+   - Prefer the PR body's manual-testing section if present.
+   - Else derive 2–6 steps from changed routes/components (e.g. open `/portfolio-view`, open affected dialog).
+   - Post the checklist in the gate comment so humans see what was exercised.
+4. **Ensure auth storage state** (dev stack must still be up from Phase 5):
+   - Path: `webapp/.playwright/e2e-user.json` (gitignored).
+   - If missing or a later MCP session returns 401: `cd webapp && pnpm e2e:save-auth` (needs `E2E_TEST_USER_PASSWORD` in `webapp/.env.local`).
+   - Playwright MCP is registered with `--storage-state=.../webapp/.playwright/e2e-user.json` and `--caps=devtools`.
+5. **Execute via Playwright MCP**: navigate each checklist step; assert no hard error/blank shell; screenshot each step under `.tmp/ui-gate/<pr-number>/` (create dirs as needed; tmp/gitignored — do not commit).
+6. **Report** a PR comment that includes:
+   - Explicit label: **advisory**
+   - PASS/FAIL per step
+   - Artifact paths (screenshot dir)
+   - Short trajectory summary (routes visited)
+7. **Gate semantics:** FAIL is non-blocking. Do **not** run fix-and-retry. Do **not** withhold `gh pr ready` because of this phase alone.
+8. **Stop the dev stack** if we started it (`started_dev_stack` is `true`):
+   - Use `TaskStop` on the dev-stack background task.
+   - Run a port cleanup command to ensure no stray processes remain:
+     ```bash
+     kill -9 $(lsof -ti :<DEV_FRONTEND_PORT>) $(lsof -ti :<DEV_API_PORT>) 2>/dev/null || true
+     ```
+   - Only run the port cleanup if `started_dev_stack` is `true`. If the stack was already running when you checked, do not kill the ports.
+9. Mark "UI verification gate (advisory)" done.
 
-### Phase 7 — Mark PR ready for review
+### Phase 7 — Real-user QA safety check (conditional)
+
+This is the final automated safety gate before the PR is considered ready. It implements the "Automated PR Orchestrator Contract" in `docs/d_USER_TESTING_GUIDE.md` by running Layer 1 (rule-based), Layer 3 (IBKR cross-reference), and conditional Layer 4/6 checks against real user data. **The gate only applies when the diff can affect the portfolio data pipeline.** On frontend/docs-only PRs, skip the gate explicitly.
+
+**Canonical test users** (hardcoded here; must stay in sync with `docs/d_USER_TESTING_GUIDE.md`):
+- `mickywook@gmail.com`
+- `smmitche12@gmail.com`
+- `f.strauf@gmail.com`
+
+1. Update `TodoList`: mark "UI verification gate (advisory)" done, "Real-user QA safety check" in-progress.
+2. **Classify the diff.** List changed files:
+   ```bash
+   git diff --name-only origin/main...HEAD 2>/dev/null || git diff --name-only origin/master...HEAD
+   ```
+   Categorize each file into at most one of these buckets (a single PR may match several buckets):
+   - `pipeline_any` — `core/portfolio/**`, `core/services/ibkr_flex/**`, `core/services/scanner/**`, `core/services/brokers/snaptrade_processor.py`, `core/db/portfolio_persistence.py`, `core/db/portfolio_exclusions.py`, `core/db/snaptrade_sync_jobs.py`, `core/qa/**`, `api/portfolio_*.py`, `api/v1/portfolio*.py`, `api/v1/test_set.py`, `api/v1/import_flex.py`, `api/v1/snaptrade_admin.py`, `api/routers/portfolio.py`, `api/routers/snaptrade.py`, `api/routers/ibkr_flex.py`, `api/services/portfolio_*.py`, `api/services/position_detail_service.py`, `api/services/trade_service.py`, `api/jobs/portfolio*.py`, `api/jobs/flex_import_job.py`, `api/validation/cross_reference.py`, `ops/resync_*.py`, `tests/golden/`, `scripts/qa_*.py`, `core/testing/**`
+   - `ingestion` — `core/services/ibkr_flex/**`, `core/services/brokers/snaptrade_processor.py`, `api/routers/snaptrade.py`, `api/v1/snaptrade_admin.py`, `core/db/snaptrade_sync_jobs.py`, `ops/resync_*.py`
+   - `calculation` — `core/portfolio/calculations.py`, `core/portfolio/analytics.py`, `core/portfolio/position_builder.py`, `core/portfolio/cost_basis.py`, `core/portfolio/spread_*.py`, `core/portfolio/lifecycle_matching.py`, `core/portfolio/view.py`, `core/portfolio/nav.py`, `core/portfolio/snapshot_accounting.py`
+   - `display_meaning` — `webapp/src/components/features/portfolio/**`, `core/portfolio/expiring_positions.py`, `core/services/scanner/classification.py`
+   - `snaptrade` — `core/services/brokers/snaptrade_processor.py`, `api/routers/snaptrade.py`, `api/v1/snaptrade_admin.py`, `core/db/snaptrade_sync_jobs.py`
+   - `frontend_only` — `webapp/**` outside portfolio features, `docs/**`, `chrome_extension_wxt/**`
+   If no file matches `pipeline_any`, `ingestion`, `calculation`, `display_meaning`, or `snaptrade`, skip the gate. Post a PR comment: `ℹ️ Real-user QA skipped — no pipeline-affecting files changed (frontend/docs only).` Mark "Real-user QA safety check" done and proceed to Phase 8.
+3. **Extract the QA user email from the original GitHub issue.** Search the issue title and body for an email address (e.g. `user@example.com` or a `QA user: <email>` line — the scoping workflow adds one for pipeline tickets).
+4. If no email is found, STOP and report: "Pipeline-affecting changes but no QA user email found in issue #<number>. Add a line `QA user: <email>` to the issue body and re-run." Do not mark the PR ready.
+5. Ensure required environment variables are available:
+   - `DATABASE_URL`: if not set, load from `api/.env`:
+     ```bash
+     export DATABASE_URL=$(grep DATABASE_URL api/.env | cut -d'"' -f2)
+     ```
+   - `BETTER_AUTH_SECRET`: required for re-sync and prod-to-local diff. If not set, load from `api/.env`:
+     ```bash
+     export BETTER_AUTH_SECRET=$(grep BETTER_AUTH_SECRET api/.env | cut -d'"' -f2)
+     ```
+     If still missing, STOP and report.
+   - **Production-secret note:** For `scripts/compare_prod_local.py` calls against `https://api.daystoexpiry.com`, the `BETTER_AUTH_SECRET` must be the *production* secret. `api/.env` and `api/.env.local` usually contain local/dev secrets, which cause the admin export endpoint to return 401. Ensure the production secret is present in the environment before running this conditional check.
+6. **Run the base Layer 1 + Layer 3 gates on active real users.** These are the checks documented in `docs/d_QA_DATA_QUALITY.md` Layer 6:
+   ```bash
+   uv run python scripts/qa_pipeline_integrity.py --real-users --ci
+   uv run python scripts/qa_ibkr_crossref.py --real-users --ci
+   ```
+7. **Run targeted checks for the issue QA user + canonical test users.** Use `--blast-radius` so Tier 1 users are also covered:
+   ```bash
+   uv run python scripts/qa_pipeline_integrity.py \
+     --email <extracted-email>,mickywook@gmail.com,smmitche12@gmail.com,f.strauf@gmail.com \
+     --blast-radius --ci
+   uv run python scripts/qa_ibkr_crossref.py \
+     --email <extracted-email>,mickywook@gmail.com,smmitche12@gmail.com,f.strauf@gmail.com \
+     --blast-radius --ci
+   ```
+8. **Interpret base-gate results** based on `docs/d_USER_TESTING_GUIDE.md`:
+   - `ALL_CLEAR`: all checks passed. Continue.
+   - `OK_WITH_WARNINGS`: only WARNs, no FAILs. Continue, but post the warning summary to the PR as a non-blocking note.
+   - `INVESTIGATE`: at least one FAIL. STOP. Do not mark the PR ready. Post the failures to the PR and report to the user.
+   Common expected WARNs (B6, B7, B9, D4) may appear in `OK_WITH_WARNINGS`. Do not treat these as blockers unless they are new or extreme. If any check exits non-zero, treat it as `INVESTIGATE` and stop.
+9. **Run conditional checks based on change type.** Only run the checks that match the diff classification. Any non-zero exit or unexpected diff is treated as `INVESTIGATE` unless the PR explicitly notes the change is intentional and a golden snapshot is updated.
+
+   **If `ingestion` is matched:**
+   - Dry-run re-sync for the QA user:
+     ```bash
+     uv run python ops/resync_user.py --email <extracted-email> --dry-run
+     ```
+   - If dry-run succeeds, run the live re-sync:
+     ```bash
+     uv run python ops/resync_user.py --email <extracted-email>
+     ```
+   - If `snaptrade` is also matched, run the SnapTrade sync curl from `docs/d_USER_TESTING_GUIDE.md` for the QA user.
+   - Re-run the targeted Layer 1 + Layer 3 checks for the QA user:
+     ```bash
+     uv run python scripts/qa_pipeline_integrity.py --email <extracted-email> --ci
+     uv run python scripts/qa_ibkr_crossref.py --email <extracted-email> --ci
+     ```
+   - If `snaptrade` is matched, run the SnapTrade source-isolation query from `docs/d_USER_TESTING_GUIDE.md`.
+
+   **If `calculation` is matched:**
+   - Determine the local API port from `webapp/.env.local`:
+     ```bash
+     DEV_API_PORT=$(grep -E '^DEV_API_PORT=' webapp/.env.local | cut -d'=' -f2)
+     DEV_API_PORT=${DEV_API_PORT:-3002}
+     ```
+   - Ensure the local Python API is running on that port. Phase 6 may have stopped the stack if Phase 5 started it — restart the API if needed. Check health:
+     ```bash
+     if ! curl -s "http://localhost:${DEV_API_PORT}/health" > /dev/null 2>&1; then
+       PYTHONPATH=. uv run uvicorn api.main:app --host 127.0.0.1 --port "${DEV_API_PORT}" &
+       API_PID=$!
+       # Wait up to 60 seconds for the API to be ready
+       for i in {1..30}; do
+         if curl -s "http://localhost:${DEV_API_PORT}/health" > /dev/null 2>&1; then
+           break
+         fi
+         sleep 2
+       done
+     fi
+     ```
+     Record whether the API was started in this step so it can be stopped afterwards.
+   - Resolve user IDs for the QA user and canonical test users:
+     ```bash
+     user_id_for() {
+       uv run python - "$1" <<'PY'
+     import sys
+     from core.db import get_db
+     email = sys.argv[1]
+     with get_db() as conn:
+         rows = conn.run("SELECT id FROM options.users WHERE email = :email", email=email)
+         print(rows[0][0] if rows else "")
+     PY
+     }
+     QA_USER_ID=$(user_id_for <extracted-email>)
+     USER_MICKY=$(user_id_for mickywook@gmail.com)
+     USER_STEVE=$(user_id_for smmitche12@gmail.com)
+     USER_FLORIAN=$(user_id_for f.strauf@gmail.com)
+     ```
+   - Run prod-to-local diff for each resolved user (skip any whose user ID could not be resolved):
+     ```bash
+     for uid in "$QA_USER_ID" "$USER_MICKY" "$USER_STEVE" "$USER_FLORIAN"; do
+       [ -n "$uid" ] || continue
+       uv run python scripts/compare_prod_local.py \
+         --prod-url https://api.daystoexpiry.com \
+         --local-url "http://localhost:${DEV_API_PORT}" \
+         --user-id "$uid" \
+         --source ibkr_flex \
+         --today $(date +%Y-%m-%d) \
+         --out "tmp/prod-local-diff-${uid}.md"
+     done
+     ```
+   - If the API was started in this step, stop it:
+     ```bash
+     if [ -n "$API_PID" ]; then
+       kill "$API_PID" 2>/dev/null || true
+     fi
+     ```
+   - If differences are detected and the PR notes they are intentional, update the relevant golden snapshot for the QA user:
+     ```bash
+     uv run python scripts/run_prod_test_set.py \
+       --prod-url https://api.daystoexpiry.com \
+       --user-id "$QA_USER_ID" \
+       --source ibkr_flex \
+       --today $(date +%Y-%m-%d) \
+       --save-test-set tests/golden_snapshots/portfolio_pipeline/<descriptive-name>.json
+     ```
+     Commit the updated snapshot.
+
+   **If `snaptrade` is matched (and `ingestion` was not):**
+   - Run the SnapTrade sync curl from `docs/d_USER_TESTING_GUIDE.md` for the QA user.
+   - Run the SnapTrade source-isolation query from `docs/d_USER_TESTING_GUIDE.md`.
+   - Run targeted Layer 1 + Layer 3 checks for the QA user.
+
+   **If `display_meaning` is matched:**
+   - Do not attempt full automation. STOP after base gates and post a PR comment with the exact fixture-based comparison commands from `docs/d_USER_TESTING_GUIDE.md`:
+     ```bash
+     cd webapp
+     pnpm tsx src/scripts/debug/compare-expiring-positions.ts export-fixture \
+       --user-id <USER_ID> --source ibkr_flex --out ../tests/fixtures/portfolio/<feature>-<user>.fixture.json
+     # Repeat for 2-3 diverse users, then emit from main and the feature branch, and diff.
+     ```
+   - Do not mark the PR ready until the user confirms the manual comparison is complete.
+10. Post a summary PR comment listing which conditional checks ran and their results. If any conditional check produced a diff or failure, attach the report file (e.g. `tmp/prod-local-diff-<email>.md`) to the comment or paste the summary.
+11. Mark "Real-user QA safety check" done.
+
+### Phase 8 — Mark PR ready for review
 
 1. Update `TodoList`: mark "Mark PR ready" in-progress.
 2. Run `gh pr ready <pr_number>`.
-3. Post a final comment summarizing all gates — use the QA line matching how Phase 6 ended:
+3. Post a final comment summarizing all gates — use the QA block matching how Phase 7 ended:
    ```
    This PR is ready for review.
    - ✅ Thermonuclear review passed
    - ✅ pnpm test:all green
-   - ✅ Real-user QA safety check passed (Tier 1 + <extracted-email>)
+   - ℹ️ UI verification gate (advisory): <pass | fail (non-blocking) | skipped — no frontend UI changes>
+   - ✅ Real-user QA safety check passed
+     - Layer 1 (rule-based pipeline integrity) on active real users
+     - Layer 3 (IBKR cross-reference) on active real users
+     - Targeted checks for <extracted-email> + canonical test users
+     - Conditional checks run: <re-sync / prod-to-local diff / SnapTrade / display-meaning manual gate / none>
    ```
-   If Phase 6 was skipped, replace the last line with: `- ⏭️ Real-user QA skipped (no pipeline-affecting changes)`
+   If Phase 7 was skipped, replace the QA block with: `- ⏭️ Real-user QA skipped (no pipeline-affecting changes)`
 4. Report the PR URL to the user.
 5. Mark all todos done.
 
@@ -339,6 +499,11 @@ At the end of a successful run, report:
 - Draft PR URL
 - Number of review iterations and final verdict
 - Test result (`pnpm test:all`)
-- Real-user QA safety check result (including the user email extracted from the issue) — or `skipped` with the reason when the diff had no pipeline-affecting files
+- UI verification gate (advisory): pass / fail (non-blocking) / skipped + artifact paths if any
+- Real-user QA safety check result:
+  - User email extracted from the issue
+  - Base gates (Layer 1 + Layer 3) result
+  - Conditional checks run (re-sync / prod-to-local diff / SnapTrade / display-meaning manual gate / none)
+  - Or `skipped` with the reason when the diff had no pipeline-affecting files
 - Note that the PR is now ready for review
-- Reminder: manual app testing is still required before approving the PR
+- Reminder: manual app testing is still required before approving the PR (fixture-based comparison is required for display-meaning changes)
