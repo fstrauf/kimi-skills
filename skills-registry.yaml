@@ -1,0 +1,131 @@
+# Machine skill registry — single source of truth for *where skills live*
+# and *how they are installed* on this Mac.
+#
+# Buckets:
+#   A   Universal personal — real file under kimi-skills; harnesses see it via
+#       ~/.kimi-code/skills root symlink (+ Grok [skills].paths).
+#   B2  Product-shipped multi-tenant — real file under a product repo; catalog
+#       + Grok install entries are *only* symlinks to that file.
+#   C   Harness-native — not managed here (Grok bundled, etc.).
+#
+# Commands (from repo root):
+#   python3 scripts/skillctl.py verify    # non-zero on drift / broken links
+#   python3 scripts/skillctl.py apply     # rewrite install links to match registry
+#   python3 scripts/skillctl.py doctor    # verify + scan for unmanaged collisions
+#
+# Rule: one real SKILL.md per skill name. Install paths never hold content.
+
+version: 1
+
+paths:
+  code: ~/01_code
+  kimi_skills_repo: ~/01_code/kimi-skills
+  universal: ~/01_code/kimi-skills/kimi-code/skills
+  agents: ~/01_code/kimi-skills/agents/skills
+  grok_user: ~/.grok/skills
+  kimi_user: ~/.kimi-code/skills
+  agents_user: ~/.agents/skills
+  pageseeds_agents: ~/01_code/pageseeds/.agents/skills
+
+# Expected root symlinks (install plane, no content)
+root_links:
+  - path: ~/.kimi-code/skills
+    target: ~/01_code/kimi-skills/kimi-code/skills
+  - path: ~/.agents/skills
+    target: ~/01_code/kimi-skills/agents/skills
+
+# Grok should load universal tree (config check is advisory)
+grok_config:
+  path: ~/.grok/config.toml
+  expect_skills_paths:
+    - ~/.kimi-code/skills
+
+skills:
+  # ── A: universal (canonical = under universal root) ─────────────────────
+  betterstack-error-triage:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/betterstack-error-triage
+  email-ops:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/email-ops
+  feature-spec-to-github-issue:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/feature-spec-to-github-issue
+  gh-scope-issue:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/gh-scope-issue
+  gh-ticket-hygiene:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/gh-ticket-hygiene
+  posthog-weekly-insights:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/posthog-weekly-insights
+  pr-orchestrator:
+    bucket: A
+    notes: "Call-analyzer thick overlay; dual-host; single file in universal tree"
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/pr-orchestrator
+  pr-orchestrator-generic:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/pr-orchestrator-generic
+  seo-deep-dive:
+    bucket: A
+    notes: "Bootstrap SEO; universal. Optional Grok convenience link."
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/seo-deep-dive
+    install:
+      - ~/.grok/skills/seo-deep-dive
+  storage-sweep:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/storage-sweep
+  thermo-nuclear-code-quality-review:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/thermo-nuclear-code-quality-review
+
+  # agents/ tree (also user-installed via ~/.agents/skills root link)
+  kimi-webbridge:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/agents/skills/kimi-webbridge
+
+  # ── B2: product multi-tenant (canonical under pageseeds) ────────────────
+  # Install = SKILL.md symlink under universal catalog + ~/.grok/skills
+  # so agents resolve the skill from any customer CWD (coffee, DTE, …).
+  weekly-seo:
+    bucket: B2
+    canonical: ~/01_code/pageseeds/.agents/skills/weekly-seo
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/weekly-seo
+      - ~/.grok/skills/weekly-seo
+  weekly-seo-continue:
+    bucket: B2
+    canonical: ~/01_code/pageseeds/.agents/skills/weekly-seo-continue
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/weekly-seo-continue
+      - ~/.grok/skills/weekly-seo-continue
+  weekly-seo-status:
+    bucket: B2
+    canonical: ~/01_code/pageseeds/.agents/skills/weekly-seo-status
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/weekly-seo-status
+      - ~/.grok/skills/weekly-seo-status
+  seo-program-review:
+    bucket: B2
+    canonical: ~/01_code/pageseeds/.agents/skills/seo-program-review
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/seo-program-review
+      - ~/.grok/skills/seo-program-review
+  video-clip:
+    bucket: B2
+    canonical: ~/01_code/pageseeds/.agents/skills/video-clip
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/video-clip
+      - ~/.grok/skills/video-clip
+  reddit-engage:
+    bucket: B2
+    notes: "Canonical pageseeds; was duplicated as real files in kimi-skills + ~/.grok"
+    canonical: ~/01_code/pageseeds/.agents/skills/reddit-engage
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/reddit-engage
+      - ~/.grok/skills/reddit-engage
+
+# Files that should not exist (stale archives / dead targets)
+cleanup:
+  - ~/01_code/kimi-skills/kimi-code/skills/weekly-seo/SKILL.md.stale-explore-first-20260723

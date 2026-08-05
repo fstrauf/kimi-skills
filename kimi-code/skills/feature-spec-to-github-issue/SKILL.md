@@ -61,10 +61,39 @@ Use this structure:
 
 Use `gh issue create` with:
 - `--title`: Concise, descriptive
-- `--label`: Appropriate label(s) from repo
+- `--label`: See **Label pathway** below (critical — wrong labels strand tickets)
 - `--body`: The full structured markdown
 
 If labels don't exist, omit `--label` rather than fail.
+
+### Label pathway (call-analyzer / pr-loop / scope-loop)
+
+Ship machinery is **REST labels only**. The **only** implement queue is `ready`.
+
+```text
+create issue
+  ├─ default: bug|enhancement + priority/P*   → scope-loop → +ready → pr-loop
+  ├─ open questions remain: +needs-input       → park (no ready)
+  └─ explicit "skip scope, ship now": +ready   → pr-loop directly
+```
+
+| Do | Don't |
+|----|--------|
+| `bug` / `enhancement` + `priority/P0`–`P3` | Use **only** `triage:ready-to-implement` (orphans the ticket) |
+| Leave ship labels empty so **scope-loop** picks it up | Confuse `triage:ready-to-implement` with `ready` |
+| Add `ready` only when the body is truly build-ready **and** you intend to skip scope | Add `ready` on epics / tracking issues |
+| Add `needs-input` when owner decisions block | Dual-label `ready` + `needs-input` |
+
+**`triage:ready-to-implement` is metadata, not a queue.** If you set it, also set `ready` (or leave both off and let scope-loop run). Loops auto-heal orphans → `ready`, but do not rely on that as the happy path.
+
+Example create (default path — will enter scope-loop):
+
+```bash
+gh issue create --title "…" \
+  --label "bug,priority/P1" \
+  --body "…"
+# do NOT add triage:ready-to-implement or ready unless intentional
+```
 
 ## Principles
 

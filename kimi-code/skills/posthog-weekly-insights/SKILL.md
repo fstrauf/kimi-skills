@@ -111,11 +111,33 @@ Get recordings with friction signals from the last 7 days, excluding internal us
 
 **Rage-click sessions (possible broken UI):**
 
+Do **not** filter recordings with
+`properties: [{ "key": "event", "type": "event", "value": "$rageclick" }]`.
+That filter returns 0 results even when `$rageclick` events and matching
+recordings both exist (diagnosed in issue #950).
+
+**Correct two-step approach:**
+
+1. Resolve session IDs from `$rageclick` events (HogQL):
+
+```sql
+SELECT properties.$session_id AS sid, count() AS n
+FROM events
+WHERE event = '$rageclick'
+  AND timestamp >= now() - INTERVAL 7 DAY
+  AND properties.$session_id IS NOT NULL
+GROUP BY sid
+ORDER BY n DESC
+LIMIT 30
+```
+
+2. Fetch recordings by those IDs:
+
 ```json
 {
   "date_from": "-7d",
   "filter_test_accounts": true,
-  "properties": [{ "key": "event", "operator": "exact", "type": "event", "value": "$rageclick" }],
+  "session_ids": ["<sid1>", "<sid2>"],
   "order": "start_time",
   "limit": 30
 }
@@ -164,11 +186,51 @@ Use trends to understand last-week volume vs the prior week.
 
 Identify the biggest drop-off. Common funnels for this product:
 
-- Sign-up → first portfolio link / first data import
+- **Signup & activation (canonical)** — see measurement contract below; never use raw all-CTA → signup
 - Portfolio view → feature usage (screener, options chain, etc.)
 - Any onboarding step with known steps
 
-Example funnel command:
+#### Canonical signup & activation (issue #949) — required for growth sections
+
+**In-repo contract:** `call-analyzer` repo → `webapp/src/lib/analytics/MEASUREMENT_CONTRACT.md`  
+**Dashboard:** [Growth — Signup & activation](https://us.posthog.com/project/227760/dashboard/1909159)  
+(`filterTestAccounts: true` on every query)
+
+| Metric | Definition | Window |
+|---|---|---|
+| Signup-eligible CTA | `cta_clicked` where `destination` regex `/sign-up\|/pricing` | period |
+| CTA → start → complete | eligible CTA → `signup_started` → `signup_completed` | 1d ordered |
+| Activation | `signup_completed` → (`portfolio_import_completed` OR `broker_connection_created`) | 7d |
+
+**Anti-pattern:** reporting `cta_clicked` (all destinations) → `signup_*` produces a false ~0% funnel because free-tool CTAs dominate volume. Always qualify CTAs or lead with the dashboard numbers and explain the filter.
+
+Example signup-eligible funnel:
+
+```json
+{
+  "kind": "FunnelsQuery",
+  "series": [
+    {
+      "kind": "EventsNode",
+      "event": "cta_clicked",
+      "custom_name": "Signup-eligible CTA",
+      "properties": [{ "key": "destination", "operator": "regex", "type": "event", "value": "/sign-up|/pricing" }]
+    },
+    { "kind": "EventsNode", "event": "signup_started" },
+    { "kind": "EventsNode", "event": "signup_completed" }
+  ],
+  "dateRange": { "date_from": "-7d" },
+  "funnelsFilter": {
+    "funnelOrderType": "ordered",
+    "funnelVizType": "steps",
+    "funnelWindowInterval": 1,
+    "funnelWindowIntervalUnit": "day"
+  },
+  "filterTestAccounts": true
+}
+```
+
+Other product funnels (example — replace with events from step 1):
 
 ```json
 {
@@ -187,12 +249,39 @@ Use event names discovered in step 1. Do not invent events.
 
 ### 5. Pull PostHog error tracking (if enabled)
 
+Project: **covered calls** (`projectId` 227760). Switch if the MCP is on another project:
+
 ```
-mcp__posthog__exec: command="call query-error-tracking-issues-list {}"
+call switch-project {"projectId": 227760}
+call query-error-tracking-issues-list {"status": "active", "dateRange": {"date_from": "-7d"}, "filterTestAccounts": true}
 ```
 
 If error tracking is not enabled or returns nothing, note that in the report and rely on
 session `console_error_count` instead.
+
+#### Known noise suppressions (issue #950)
+
+These are **ingestion suppression rules** (not app code). Matching `$exception`
+events are dropped at ingest so they do not re-pollute the active issue list.
+
+| Pattern (`$exception_values`) | Why |
+|---|---|
+| `icontains` `ResizeObserver loop` | Browser layout thrash; not app-owned |
+| `icontains` `runtime.sendMessage` | Chrome extension / tab lifecycle noise |
+| `exact` `Script error.` | Cross-origin synthetic; no stack |
+
+One-off network noise (e.g. single `Failed to fetch`) may be issue-status
+`suppressed` without a permanent rule.
+
+**Do not file GitHub issues** for the rows above. When reviewing error tracking,
+ignore `status: suppressed` issues. Better Stack remains the production error
+tracker for app bugs (`docs/d_INFRASTRUCTURE.md`); PostHog error tracking is
+secondary (remote-enabled exception autocapture) used only for weekly product
+triage.
+
+If a new high-volume browser/extension pattern appears, prefer a tight
+`error-tracking-suppression-rules-create` filter over app code unless our code
+throws the exception.
 
 ### 6. Synthesize the weekly report
 
