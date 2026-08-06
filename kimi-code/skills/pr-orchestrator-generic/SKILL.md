@@ -149,7 +149,20 @@ These override any other instruction in this skill or any invoked skill:
 
 ## GitHub Stacked PRs (mode A — stack-aware)
 
-**Default remains one issue → one ship unit.** Mode A does **not** auto-split work into multi-layer stacks (that is mode B). It makes the orchestrator and pr-loop **safe and correct** when a stack exists or when `ORCH_STACK=1` prefers stack tooling.
+**Default remains one issue → one ship unit.**
+
+### Ready-queue order (Depends on)
+
+`pr-loop` does **not** ship issues in random open order. `ready_label_candidates` in `loop-common.sh`:
+
+1. Only `ready` (skips `blocked` / `agent-*` / Epics).
+2. Parses `## Depends on` / `Depends on: #N` from the issue body.
+3. **Topological sort** among ready issues (priority, then issue number as tie-break).
+4. Defers a ready issue if an open dependency is not closed and not also `ready`.
+
+Scope agents must put **code dependencies in the body**, not in the `blocked` label. See `gh-scope-issue` → *Dependencies vs park labels*.
+
+ Mode A does **not** auto-split work into multi-layer stacks (that is mode B). It makes the orchestrator and pr-loop **safe and correct** when a stack exists or when `ORCH_STACK=1` prefers stack tooling.
 
 ### Detect once (Phase 0)
 

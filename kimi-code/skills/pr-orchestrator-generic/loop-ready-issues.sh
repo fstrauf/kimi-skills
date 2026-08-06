@@ -6,8 +6,9 @@
 # Architecture: this file is a thin, stable loop. All per-issue work lives in
 # loop-issue-worker.sh, which is COPIED to a temp file and executed fresh at
 # every iteration — so edits to the worker or loop-common.sh take effect on
-# the NEXT issue of an already-running loop. Only edits to this supervisor
-# file require a restart.
+# the NEXT issue of an already-running loop. The supervisor itself re-execs
+# from a temp copy at startup, so edits to THIS file mid-run are also safe
+# (they take effect on the next run, never corrupt the current one).
 #
 # Profiles: board + repo config lives in profiles/<name>.env. Pass
 #   --profile <name>
@@ -66,7 +67,24 @@
 
 set -uo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# --- Self-copy guard (must run before SCRIPT_DIR is used) ---------------------
+# Re-exec from a temp copy so that editing THIS file mid-run cannot corrupt
+# bash's lazy byte-offset reads (crash signature: stray one-char command +
+# "syntax error near unexpected token" right after the queue drains). The
+# worker already gets this treatment per iteration; now the supervisor does
+# too. LOOP_SELF_DIR preserves the real script dir for sibling files
+# (worker, loop-common.sh, profiles/) after the re-exec.
+if [ -z "${LOOP_SELF_COPY:-}" ]; then
+  LOOP_SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  export LOOP_SELF_DIR
+  LOOP_SELF_COPY=$(mktemp -t pr-loop-self) || { echo "mktemp failed" >&2; exit 1; }
+  cp "${BASH_SOURCE[0]}" "$LOOP_SELF_COPY" || { echo "self-copy failed" >&2; exit 1; }
+  export LOOP_SELF_COPY
+  exec bash "$LOOP_SELF_COPY" "$@"
+fi
+trap 'rm -f "$LOOP_SELF_COPY"' EXIT
+
+SCRIPT_DIR=${LOOP_SELF_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 
 # --- Args (parse before sourcing so ORCH_AGENT is final) -----------------------
 
@@ -300,11 +318,20 @@ ensure_loop_labels
 ensure_gh_stack_ready
 export ORCH_STACK_CLI ORCH_STACK_REPO_OK ORCH_STACK_READY ORCH_STACK
 
+# Persist the full run transcript (queue, pick decisions, exit reason) to a
+# per-run summary log. Previously master output was stdout-only, so there was
+# no way to tell after the fact why a loop stopped (empty queue, preflight
+# die, interrupt). scope-all.sh already tees its summary; mirror that here.
+RUN_ID=$(date +%Y%m%d-%H%M%S)
+SUMMARY_LOG="$LOG_DIR/summary-$RUN_ID.log"
+exec > >(tee -a "$SUMMARY_LOG") 2>&1
+
 log "Profile: $LOOP_PROFILE ($LOOP_PROFILE_PATH)"
 log "Repo:    $REPO  |  checkout $REPO_DIR"
 # Heal triage:ready-to-implement orphans → +ready before listing the queue.
 # Historical bug: triage label alone was neither scoped nor shipped.
 promote_triage_ready_orphans log
+heal_false_dependency_blocks log
 
 log "Queue:   REST label \`${ORCH_READY_LABEL:-ready}\` (not the project board)"
 log "Ship:    ready → agent-working → land + close issue | fail → agent-failed"

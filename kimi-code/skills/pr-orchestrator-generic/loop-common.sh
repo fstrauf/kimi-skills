@@ -1069,9 +1069,14 @@ is_tracking_only_issue() {
 #        │
 #        ├─ (default) no ship labels ──► scope-loop ──► +ready ──► pr-loop
 #        ├─ +ready (explicit skip-scope) ──────────────► pr-loop
-#        ├─ +needs-input / +blocked ──► park (human)
+#        ├─ +needs-input / true +blocked ──► park (human / external)
 #        └─ +triage:ready-to-implement only ──► ORPHAN (historical)
 #              heal: promote_triage_ready_orphans → +ready
+#
+#   Code dependencies (sibling tickets) are NOT a park reason:
+#     scope writes ## Depends on + ready; pr-loop topo-sorts the ready queue.
+#     heal_false_dependency_blocks: blocked + depends language without
+#     external ship gate → -blocked +ready (fixes legacy mis-scopes).
 #
 #   ready → agent-working → land + close
 #                        → agent-failed (re-add ready to retry)
@@ -1082,9 +1087,10 @@ is_tracking_only_issue() {
 #   agent-failed   — last run failed; remove + re-add ready to retry
 #   triage:ready-to-implement — metadata from triage only; NOT a ship queue.
 #                               Must never sit without ready/needs-input/blocked.
+#   blocked        — external/human freeze only (NOT "depends on open #N")
 #
 # Mode "pick": prints "<issue-number>" only
-# Mode "list": prints "#<n> (priority) title…"
+# Mode "list": prints "#<n> (priority) [deps] title…"
 
 : "${ORCH_READY_LABEL:=ready}"
 : "${ORCH_TRIAGE_READY_LABEL:=triage:ready-to-implement}"
@@ -1220,59 +1226,114 @@ release_issue_interrupted() {
 
 # Eligible ship candidates via REST only.
 # Prefer label `ready`. Never ships: blocked/agent-failed/agent-working, Epic titles.
+# Order: priority (P0>P1>…), then topological by ## Depends on / Depends on: #N,
+# then issue number. Issues whose open deps are not yet closed and not also
+# `ready` are deferred (listed with reason in list mode; skipped in pick).
 ready_label_candidates() {
   local mode=$1
   [ -n "${REPO:-}" ] || { log "REPO not set — load a profile first"; return 1; }
   ensure_loop_labels
 
-  REPO_MATCH="$REPO" READY_LABEL="${ORCH_READY_LABEL:-ready}" MODE="$mode" python3 <<'EOF'
-import json, re, subprocess, os, sys
+  # Queue logic lives in ready_queue.py (same dir) so it is unit-testable.
+  local queue_py
+  queue_py="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ready_queue.py"
+  REPO_MATCH="$REPO" READY_LABEL="${ORCH_READY_LABEL:-ready}" MODE="$mode" \
+    python3 "$queue_py"
+}
+
+# Heal issues wrongly parked with `blocked` only because of code dependencies
+# (sibling tickets / "not on main yet"). True external freezes keep `blocked`
+# when the body has ## Ship gate (external) or budget/legal language.
+#
+# Call at start of scope-loop and pr-loop (after promote_triage_ready_orphans).
+heal_false_dependency_blocks() {
+  local mode="${1:-log}"
+  [ -n "${REPO:-}" ] || return 0
+  ensure_loop_labels
+
+  local promoted
+  promoted=$(
+    REPO_MATCH="$REPO" \
+    READY_LABEL="${ORCH_READY_LABEL:-ready}" \
+    python3 - <<'PY' 2>/dev/null || true
+import json, os, re, subprocess, sys
 
 repo = os.environ["REPO_MATCH"]
-ready_label = os.environ["READY_LABEL"]
-mode = os.environ["MODE"]
+ready = os.environ["READY_LABEL"]
 
 try:
-    issues = json.loads(subprocess.run(
+    issues = json.loads(subprocess.check_output(
         ["gh", "issue", "list", "--repo", repo, "--state", "open",
-         "--label", ready_label, "--limit", "100",
-         "--json", "number,labels,title"],
-        capture_output=True, check=True, text=True).stdout)
-except subprocess.CalledProcessError as e:
-    sys.stderr.write(e.stderr or str(e))
-    sys.exit(1)
+         "--label", "blocked", "--limit", "100",
+         "--json", "number,title,labels,body"],
+        text=True,
+    ))
+except Exception:
+    print("")
+    sys.exit(0)
 
-LABEL_PRIORITIES = ("priority/P0", "priority/P1", "priority/P2", "priority/P3")
-SKIP = {"blocked", "agent-failed", "agent-working", "tracking", "epic", "no-ai", "no-agent"}
-candidates = []
-for issue in issues:
-    n = issue["number"]
-    labels = {l["name"] for l in (issue.get("labels") or [])}
-    if labels & SKIP:
-        continue
-    title = (issue.get("title") or "").strip()
+promoted = []
+for it in issues:
+    n = it["number"]
+    title = (it.get("title") or "")
     if re.match(r"(?i)^\s*(epic\b|\[epic\])", title):
         continue
-    rank = next((i for i, p in enumerate(LABEL_PRIORITIES) if p in labels), 99)
-    rank_label = {0: "P0", 1: "P1", 2: "P2", 3: "P3"}.get(rank, "no-priority")
-    # Skip if an open PR already targets this issue (human or crash mid-merge)
-    prs = subprocess.run(
-        ["gh", "pr", "list", "--repo", repo, "--state", "open",
-         "--search", f"Closes #{n} in:body", "--json", "number"],
-        capture_output=True, check=True, text=True).stdout
-    if json.loads(prs):
+    labels = {l["name"] for l in (it.get("labels") or [])}
+    if "needs-input" in labels:
         continue
-    candidates.append((rank, n, rank_label, title[:60]))
+    if ready in labels or "agent-working" in labels or "agent-failed" in labels:
+        continue
+    body = it.get("body") or ""
 
-candidates.sort()
-if mode == "pick":
-    if candidates:
-        _r, n, _l, _t = candidates[0]
-        print(n)
-else:
-    for _r, n, rank_label, title in candidates:
-        print(f"#{n} ({rank_label}) {title}")
-EOF
+    if re.search(r"(?im)^##\s*Ship gate\s*\(external\)", body):
+        continue
+    external = bool(re.search(
+        r"(?i)\b(places\s+budget|api\s+budget|budget\s+approved|legal\s+hold|"
+        r"vendor\s+outage|human\s+approval|owner\s+decision)\b",
+        body,
+    ))
+    has_dep_lang = bool(re.search(
+        r"(?i)(##\s*Depends on\b|depends on\b|do not start until\s*#\d|"
+        r"blocked on #\d|parent epic:\s*#\d)",
+        body,
+    ))
+    if external:
+        continue
+    if not has_dep_lang:
+        continue
+
+    subprocess.run(
+        ["gh", "issue", "edit", str(n), "--repo", repo,
+         "--remove-label", "blocked", "--add-label", ready],
+        capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["gh", "issue", "comment", str(n), "--repo", repo, "--body",
+         "Auto-heal: removed `blocked` (code dependency is not a park reason). "
+         "Ship order lives in `## Depends on`; pr-loop topo-sorts the `ready` queue. "
+         "See gh-scope-issue skill — Dependencies vs park labels."],
+        capture_output=True, text=True,
+    )
+    promoted.append(str(n))
+
+print(" ".join(promoted))
+PY
+  )
+
+  promoted=$(echo "$promoted" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
+  if [ -z "$promoted" ]; then
+    case "$mode" in
+      print) echo "dep-block-heal: (none)" ;;
+      quiet) ;;
+      *) type log >/dev/null 2>&1 && log "False dep-block heal: none" || true ;;
+    esac
+    return 0
+  fi
+  case "$mode" in
+    print) echo "dep-block-heal: $promoted" ;;
+    quiet) ;;
+    *) type log >/dev/null 2>&1 && log "False dep-block heal → +${ORCH_READY_LABEL:-ready}: $promoted" || true ;;
+  esac
 }
 
 # Back-compat name used by supervisor

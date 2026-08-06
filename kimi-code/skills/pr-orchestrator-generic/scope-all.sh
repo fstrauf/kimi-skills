@@ -15,7 +15,9 @@
 #
 # Label machine:
 #   Loop:    run gh-scope-issue → remove scoping if present, add ready
-#   pr-loop: picks label ready → ship
+#   pr-loop: picks label ready → topo-sort by ## Depends on → ship
+#   blocked: external/human only — NOT "depends on open sibling ticket"
+#   Heal:    false dep-blocks → ready at loop start (see loop-common.sh)
 #
 # Usage:
 #   scope-loop --profile pageseeds-app --agent grok
@@ -47,7 +49,8 @@ Queue (REST, default):
     skip: labels ready, agent-working, agent-failed, blocked
   Optional: ORCH_SCOPE_REQUIRE_LABEL=1 → only label `scoping` (legacy)
 
-  After success: -scoping +ready  (unless blocked / needs-input)
+  After success: -scoping +ready  (unless needs-input / true external blocked)
+  Code deps: still +ready (body ## Depends on); pr-loop orders them.
 
 Examples:
   scope-loop --profile pageseeds-app --agent grok
@@ -185,6 +188,8 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$SUMMARY"; }
 # Heal triage:ready-to-implement orphans → +ready (see loop-common.sh).
 # Must run before the scope snapshot so healed issues are not re-scoped.
 promote_triage_ready_orphans log
+# Heal false "blocked on open sibling" parks → +ready (code deps ≠ park).
+heal_false_dependency_blocks log
 
 # Snapshot open issues that need scoping (REST).
 # Default: every open non-epic issue not already in ship/failed/blocked pipeline.
@@ -277,7 +282,7 @@ case "$ORCH_AGENT" in
     ;;
 esac
 
-# After successful scope: hand off to pr-loop unless the scoper left it blocked.
+# After successful scope: hand off to pr-loop unless needs-input / true external blocked.
 promote_scoped_to_ready() {
   local n=$1
   local labels
@@ -286,7 +291,8 @@ promote_scoped_to_ready() {
   gh issue edit "$n" --repo "$REPO" --remove-label "$ORCH_SCOPING_LABEL" >/dev/null 2>&1 || true
 
   if printf '%s' "$labels" | grep -Eq '(^|,)(blocked|needs-input)(,|$)'; then
-    log "    labels: -$ORCH_SCOPING_LABEL (kept out of ready — blocked/needs-input) (#$n)"
+    log "    labels: -$ORCH_SCOPING_LABEL (kept out of ready — needs-input/external blocked) (#$n)"
+    log "    note: code deps must use ## Depends on + ready, not blocked (see gh-scope-issue)"
     return 0
   fi
 
@@ -301,7 +307,7 @@ if [ "$ORCH_SCOPE_REQUIRE_LABEL" = "1" ]; then
 else
   log "Queue:   all open non-epic issues not already ready/agent-*/blocked/needs-input"
 fi
-log "After:   -$ORCH_SCOPING_LABEL +$ORCH_READY_LABEL (unless blocked/needs-input)"
+log "After:   -$ORCH_SCOPING_LABEL +$ORCH_READY_LABEL (unless needs-input/external blocked)"
 log "Issues:  $ISSUES"
 log "Logs:    $LOGDIR"
 
