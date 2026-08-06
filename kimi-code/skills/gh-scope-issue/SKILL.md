@@ -68,16 +68,73 @@ pr-loop     ready → implement → land → close
 |--------|-------------|---------|
 | *(none)* | — | Default: **needs scope** until `ready` |
 | `scoping` | scope-loop (while in flight) | Visibility only — **not required to enqueue** |
-| **`ready`** | This skill / scope-loop / human | **THE** pr-loop ship queue |
-| `needs-input` / `blocked` | This skill | Parked — **not** ready |
+| **`ready`** | This skill / scope-loop / human | **THE** pr-loop ship queue — **spec is build-ready** |
+| `needs-input` | This skill | **Human must answer** (product/legal/budget decision). Parked. |
+| `blocked` | This skill / human | **External stop only** (vendor, legal hold, explicit ship gate). **Rare.** Parked. |
 | `agent-working` / `agent-failed` | pr-loop only | Ship machinery — scope-loop skips |
-| `triage:ready-to-implement` | triage / agents (metadata) | **Not a queue.** If present without `ready`, scope-loop and pr-loop **auto-promote to `ready`** so tickets never sit in purgatory. Prefer setting `ready` directly when build-ready. |
+| `triage:ready-to-implement` | triage / agents (metadata) | **Not a queue.** If present without `ready`, scope-loop and pr-loop **auto-promote to `ready`**. |
 
 Board columns are for humans only. **Do not** use `gh project item-edit` for queue status.
 
 Profile (`pr-orchestrator-generic/profiles/<name>.env`): `REPO` / `REPO_DIR` only for this skill.
 
 **Legacy:** `ORCH_SCOPE_REQUIRE_LABEL=1 scope-loop …` restores “only label `scoping`”.
+
+---
+
+## Dependencies vs park labels (critical — do not conflate)
+
+**Scoped ≠ mergeable on main right now.** Scope answers: “Is the contract clear enough to implement?”  
+Ship order answers: “What lands first?” — that is **pr-loop’s job**, not a reason to withhold `ready`.
+
+| Situation | What to do | Labels |
+|-----------|------------|--------|
+| Spec is clear; needs columns/API from sibling ticket #N that is open or not on main yet | Document order; **still mark ready** | `+ready` — **never** `blocked` |
+| Spec is clear; epic lists ship order 1→2→3 | Same | all children `+ready` after scope |
+| Product/budget/legal question only a human can answer | Park | `+needs-input` (preferred) or `+blocked` with `## Ship gate (external)` |
+| True external freeze (vendor outage, legal hold) | Park | `+blocked` + short reason in body |
+
+### Forbidden (fail the skill)
+
+- Labeling `blocked` because “#110 isn’t merged yet” / “schema columns don’t exist on main yet” / “depends on open sibling”
+- Withholding `ready` so the human must re-run scope-loop after every merge
+- Using `blocked` as a poor-man’s queue for epic child order
+
+### Required when work is ordered
+
+Always include a machine-parseable section (pr-loop topologically sorts on this):
+
+```markdown
+## Depends on
+- #110 — geo columns on roasters (land or stack under this first)
+- #111 — meta enricher (preferred before map has pins; map may still ship null-safe)
+```
+
+Rules for the list:
+
+- Only **ship issues** (other non-epic tickets). Do **not** list parent epics as Depends-on (epics never ship).
+- Prefer issue numbers (`#110`), not free text alone.
+- Optional prose after the number is fine.
+- If there are **no** code dependencies, omit the section (or write `## Depends on` / `_None_`).
+
+### External gates only
+
+If something truly must not ship until a human acts outside the repo:
+
+```markdown
+## Ship gate (external)
+- [ ] Places API budget approved (~$X one-off)
+```
+
+Then `+needs-input` or `+blocked` — **not** because of open GitHub issues.
+
+### Mental model
+
+```text
+scope-loop  →  every clear child gets +ready (with ## Depends on)
+pr-loop     →  topo-sort by Depends on; implement/stack in order; land
+human       →  only needs-input / true external blocked
+```
 
 ---
 
@@ -117,7 +174,7 @@ Skip issues already labeled `ready`, `agent-working`, `agent-failed`, `blocked`,
 - **Symptom patch** = guard/null-check/UI workaround while the producer of bad state stays wrong.  
 - **Root-cause fix** = change the layer that owns the invariant so the bad state cannot recur.
 
-Name: violated invariant + `file:line` where invalid state is **created**. If you cannot, keep investigating or mark blocked — do not invent a design on an unnamed cause.
+Name: violated invariant + `file:line` where invalid state is **created**. If you cannot, keep investigating or mark `needs-input` — do not invent a design on an unnamed cause. Do **not** use `blocked` for missing sibling work.
 
 ---
 
@@ -192,6 +249,8 @@ Prefer **refine** a good ticket over full rewrite. Always include:
 ## Problem
 ## Priority
 ## Milestone
+## Depends on
+- #N — short reason (omit section or use _None_ if independent)
 ## Current state / root cause
 ### Premise verification
 ### Symptom vs. origin
@@ -204,6 +263,9 @@ Prefer **refine** a good ticket over full rewrite. Always include:
 ## Acceptance criteria
 ## QA / verification
 ## Estimate
+<!-- Only if true external gate (budget/legal) — otherwise omit -->
+## Ship gate (external)
+- [ ] …
 <details><summary>Original ticket (archived)</summary>
 …
 </details>
@@ -220,8 +282,10 @@ Acceptance must include: fix addresses origin (`file:line`), not only the sympto
 
 | Outcome | Labels |
 |---------|--------|
-| Build-ready | `-scoping` `+ready` |
-| Needs owner input / blocked | `-ready` if present; `+needs-input` or `+blocked`; **no** `ready` |
+| Build-ready (incl. when siblings must land first) | `-scoping` `+ready`; body has `## Depends on` if ordered |
+| Needs **human** input (budget/product/legal) | `-ready` if present; `+needs-input`; **no** `ready` |
+| True external freeze only | `+blocked` + `## Ship gate (external)`; **no** `ready` |
+| Open sibling / “not on main yet” | **Still `+ready`** — never `blocked` for this |
 | Delete candidate | recommend close in comment; **no** `ready` (optional `+needs-input`) |
 | Tracking epic | never `ready` (scope-loop should not pick epics) |
 
@@ -239,6 +303,8 @@ Acceptance must include: fix addresses origin (`file:line`), not only the sympto
 - Shipping architecture that duplicates an existing module  
 - Adding `ready` to epics or delete-candidates  
 - Implementing the feature “to verify” the scope  
+- **`blocked` because a dependency issue is still open or columns are not on main yet** — use `## Depends on` + `ready`  
+- Forcing the human to merge one child, re-run scope-loop, then the next  
 
 ---
 
