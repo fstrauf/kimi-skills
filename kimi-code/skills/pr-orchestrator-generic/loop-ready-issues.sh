@@ -132,6 +132,12 @@ Environment:
                       non-interactive stack use. 0 = skip bootstrap.
   ORCH_STACK_UPGRADE  0 (default) = do not upgrade the extension every run;
                       1 = `gh extension upgrade` when already installed.
+  ORCH_STACK_AUTOLAND 0 (default) = stacked/approval-blocked PRs stay open as
+                      `awaiting-merge` for a human (or `gh stack merge`).
+                      1 = worker lands stack-linked chains itself via
+                      `gh stack merge --yes` when `gh pr merge` is blocked
+                      (e.g. by a local gh shim). Bypasses human-merge guards —
+                      opt in consciously.
   ORCH_BOARD          0 (default) = board is view-only for humans; agents never
                       write project status (avoids GraphQL burn). Still *reads*
                       Ready column once per pick. Set 1 to auto-move cards.
@@ -286,7 +292,7 @@ export STATUS_FIELD_ID OPT_READY OPT_IN_PROGRESS OPT_IN_REVIEW
 [ -n "${OPT_BACKLOG:-}" ] && export OPT_BACKLOG
 export LOOP_PROFILE LOOP_PROFILE_PATH
 # Stack bootstrap knobs (worker re-runs ensure_gh_stack_ready per issue)
-export ORCH_STACK ORCH_STACK_ENSURE ORCH_STACK_UPGRADE
+export ORCH_STACK ORCH_STACK_ENSURE ORCH_STACK_UPGRADE ORCH_STACK_AUTOLAND
 export ORCH_STACK_CLI ORCH_STACK_REPO_OK ORCH_STACK_READY
 
 # --- Preflight ----------------------------------------------------------------
@@ -332,9 +338,14 @@ log "Repo:    $REPO  |  checkout $REPO_DIR"
 # Historical bug: triage label alone was neither scoped nor shipped.
 promote_triage_ready_orphans log
 heal_false_dependency_blocks log
+# REST-only recovery: issues stuck on agent-working after a hard kill get
+# re-queued (no PR) or parked as awaiting-merge (open PR).
+recover_stuck_agent_working
+# Restack open PR chains whose bottom PR was human-merged since the last run.
+restack_open_chains
 
 log "Queue:   REST label \`${ORCH_READY_LABEL:-ready}\` (not the project board)"
-log "Ship:    ready → agent-working → land + close issue | fail → agent-failed"
+log "Ship:    ready → agent-working → land + close issue | awaiting-merge (stacked) | fail → agent-failed"
 log "Stack:   ensure=${ORCH_STACK_ENSURE:-1} mode=${ORCH_STACK:-auto} cli=${ORCH_STACK_CLI:-0} repo_ok=${ORCH_STACK_REPO_OK:-0} ready=${ORCH_STACK_READY:-0}"
 log "You:     gh issue edit N --add-label ready   # enqueue"
 log "         gh issue edit N --remove-label agent-failed --add-label ready  # retry"

@@ -121,6 +121,91 @@ class DepStatusTest(unittest.TestCase):
         self.assertEqual(status, "ok")
         self.assertIn("unresolvable", err.getvalue())
 
+    def test_open_with_open_pr_is_pr_open(self):
+        self.seed(7, "OPEN")
+        ready_queue._pr_index = {7: {"pr": 70, "head": "feature/7-x"}}
+        try:
+            self.assertEqual(ready_queue.dep_status(7), "pr_open")
+        finally:
+            ready_queue._pr_index = None
+
+    def test_open_awaiting_merge_label_is_pr_open(self):
+        self.seed(8, "OPEN", labels=("awaiting-merge",))
+        ready_queue._pr_index = {}
+        try:
+            self.assertEqual(ready_queue.dep_status(8), "pr_open")
+        finally:
+            ready_queue._pr_index = None
+
+
+class BaseBranchTest(unittest.TestCase):
+    def setUp(self):
+        ready_queue.repo = "o/r"
+        ready_queue.state_cache.clear()
+        ready_queue._pr_index = None
+        self._orig_default = ready_queue.default_branch
+        ready_queue.default_branch = lambda: "master"
+
+    def tearDown(self):
+        ready_queue.default_branch = self._orig_default
+        ready_queue._pr_index = None
+
+    def seed(self, n, state="OPEN", labels=()):
+        ready_queue.state_cache[n] = {
+            "number": n, "state": state,
+            "labels": [{"name": l} for l in labels], "title": "",
+        }
+        if not hasattr(self, "_bodies"):
+            self._bodies = {}
+        if getattr(self, "_patched", False):
+            return
+        self._patched = True
+        orig = ready_queue.gh_json
+        bodies = self._bodies
+
+        def fake(args):
+            if args[:2] == ["issue", "view"] and "body" in args:
+                return {"body": bodies.get(int(args[2]), "")}
+            if args[:2] == ["pr", "list"]:
+                return []
+            return orig(args)
+
+        ready_queue.gh_json = fake
+        self.addCleanup(setattr, ready_queue, "gh_json", orig)
+
+    def test_no_open_pr_deps_falls_back_to_default(self):
+        self._bodies = {10: "## Depends on\n\n- #7\n"}
+        self.seed(7, "CLOSED")
+        self.assertEqual(ready_queue.base_branch_for_issue(10), "master")
+
+    def test_single_open_pr_dep_gives_its_head(self):
+        self._bodies = {10: "## Depends on\n\n- #7\n"}
+        self.seed(7, "OPEN", labels=("awaiting-merge",))
+        ready_queue._pr_index = {7: {"pr": 70, "head": "feature/7-scrape"}}
+        self.assertEqual(ready_queue.base_branch_for_issue(10), "feature/7-scrape")
+
+    def test_multi_dep_picks_topmost(self):
+        # #9 depends on #8, so #9's branch already contains #8's work.
+        self._bodies = {
+            10: "## Depends on\n\n- #8\n- #9\n",
+            8: "",
+            9: "## Depends on\n\n- #8\n",
+        }
+        self.seed(8, "OPEN", labels=("awaiting-merge",))
+        self.seed(9, "OPEN", labels=("awaiting-merge",))
+        ready_queue._pr_index = {
+            8: {"pr": 80, "head": "feature/8-api"},
+            9: {"pr": 90, "head": "feature/9-compare"},
+        }
+        self.assertEqual(ready_queue.base_branch_for_issue(10), "feature/9-compare")
+
+    def test_ready_dep_without_pr_is_not_a_base(self):
+        # Dep still in the ready queue (no PR yet) — not a base candidate.
+        self._bodies = {10: "## Depends on\n\n- #7\n"}
+        self.seed(7, "OPEN", labels=("ready",))
+        ready_queue._pr_index = {}
+        self.assertEqual(ready_queue.base_branch_for_issue(10), "master")
+
 
 class ComputeQueueOrderTest(unittest.TestCase):
     def setUp(self):
@@ -159,6 +244,40 @@ class ComputeQueueOrderTest(unittest.TestCase):
             ready_queue.gh_json = orig
         self.assertEqual([c["n"] for c in ordered], [1205])
         self.assertEqual(deferred, [])
+
+    def test_dep_with_open_pr_does_not_defer(self):
+        """Dependent of an awaiting-merge issue stays pickable (stack-through)."""
+        issues = [
+            {
+                "number": 120,
+                "title": "Nav section",
+                "labels": [{"name": "ready"}, {"name": "priority/P1"}],
+                "body": "## Depends on\n\n- #118\n",
+            },
+        ]
+        ready_queue.state_cache[118] = {
+            "number": 118, "state": "OPEN",
+            "labels": [{"name": "awaiting-merge"}], "title": "scrape",
+        }
+        ready_queue._pr_index = {118: {"pr": 128, "head": "feature/118-scrape"}}
+        orig = ready_queue.gh_json
+
+        def fake(args):
+            if args[:2] == ["issue", "list"]:
+                return issues
+            if args[:2] == ["pr", "list"]:
+                return []
+            raise AssertionError(args)
+
+        ready_queue.gh_json = fake
+        try:
+            ordered, deferred = ready_queue.compute_queue("ready")
+        finally:
+            ready_queue.gh_json = orig
+            ready_queue._pr_index = None
+        self.assertEqual([c["n"] for c in ordered], [120])
+        self.assertEqual(deferred, [])
+        self.assertEqual(ordered[0]["dep_statuses"], {118: "pr_open"})
 
 
 if __name__ == "__main__":

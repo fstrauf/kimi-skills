@@ -8,6 +8,8 @@ Env interface (unchanged from the loop-common.sh heredoc):
   REPO_MATCH   owner/repo
   READY_LABEL  queue label (default: ready)
   MODE         "pick" (print next issue number) | "list" (print full queue)
+             | "base" (print the branch issue ISSUE_N must build on)
+  ISSUE_N      issue number for MODE=base
 
 Fixes vs the old inline version:
   * parse_depends_on: a "## Depends on" section whose first line declares
@@ -19,6 +21,15 @@ Fixes vs the old inline version:
   * dep_status: MERGED (a dep referencing a pull request) counts as
     satisfied, and unresolvable refs (neither issue nor PR) no longer defer
     an issue forever — they are treated as satisfied with a stderr note.
+
+Stack-through mode:
+  * dep_status "pr_open": a dep whose issue is still OPEN but already has an
+    open PR closing it (or carries the `awaiting-merge` label) is SATISFIED —
+    the dependent builds on that PR's branch instead of waiting for a merge.
+    This is what lets pr-loop drain a whole dependency chain without a human
+    merge between steps.
+  * MODE=base resolves which branch the next issue must fork from: the head
+    branch of the topmost open-PR dep, else the repo default branch.
 """
 
 import json
@@ -32,8 +43,9 @@ from collections import defaultdict
 repo = ""
 
 LABEL_PRIORITIES = ("priority/P0", "priority/P1", "priority/P2", "priority/P3")
-SKIP = {"blocked", "agent-failed", "agent-working", "tracking", "epic", "no-ai", "no-agent"}
+SKIP = {"blocked", "agent-failed", "agent-working", "tracking", "epic", "no-ai", "no-agent", "awaiting-merge"}
 state_cache = {}
+_pr_index = None  # {issue_n: {"pr": int, "head": str}} — built once per run
 
 
 def gh_json(args):
@@ -96,6 +108,37 @@ def issue_meta(n):
     return state_cache[n]
 
 
+def open_pr_index():
+    """Map issue number -> {"pr", "head"} for open PRs that close it.
+
+    Matches `Closes/Fixes/Resolves #N` in body/title and the conventional
+    `feature/<N>-…` branch name. Built lazily, cached per process; tests may
+    seed `_pr_index` directly.
+    """
+    global _pr_index
+    if _pr_index is not None:
+        return _pr_index
+    idx = {}
+    try:
+        prs = gh_json([
+            "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
+            "--json", "number,headRefName,body,title",
+        ])
+    except SystemExit:
+        prs = []
+    for pr in prs or []:
+        head = pr.get("headRefName") or ""
+        blob = f"{pr.get('body') or ''}\n{pr.get('title') or ''}"
+        nums = {int(x) for x in re.findall(r"(?i)(?:closes|fixes|resolves)\s+#(\d+)", blob)}
+        m = re.search(r"(?i)(?:^|/)(?:feature|fix|chore|issue)[/-](\d+)(?:[-/]|$)", head)
+        if m:
+            nums.add(int(m.group(1)))
+        for n in nums:
+            idx.setdefault(n, {"pr": pr["number"], "head": head})
+    _pr_index = idx
+    return idx
+
+
 def dep_status(dep):
     meta = issue_meta(dep)
     st = (meta.get("state") or "").upper()
@@ -110,6 +153,11 @@ def dep_status(dep):
         labs = {l["name"] for l in (meta.get("labels") or [])}
         if "ready" in labs or "agent-working" in labs:
             return "wait_ready"
+        # Work done, merge pending: an open PR closes this dep (or the loop
+        # parked it with `awaiting-merge`). Dependents stack onto the PR's
+        # branch instead of waiting for a human merge.
+        if "awaiting-merge" in labs or dep in open_pr_index():
+            return "pr_open"
         return "wait_other"
     # Unresolvable ref (not an issue or PR — typo, deleted, or transferred).
     # Never park the dependent forever: treat as satisfied, but say so.
@@ -156,9 +204,11 @@ def compute_queue(ready_label):
     deferred = []
     for c in candidates:
         blocking = []
+        statuses = {}
         for d in sorted(c["deps"]):
             s = dep_status(d)
-            if s == "ok":
+            statuses[d] = s
+            if s in ("ok", "pr_open"):
                 continue
             if s == "wait_ready" and d in ready_nums:
                 continue
@@ -166,6 +216,7 @@ def compute_queue(ready_label):
                 blocking.append(f"#{d}(in-flight)")
                 continue
             blocking.append(f"#{d}({s})")
+        c["dep_statuses"] = statuses
         if blocking:
             c["block_reason"] = ",".join(blocking)
             deferred.append(c)
@@ -203,11 +254,53 @@ def compute_queue(ready_label):
     return ordered, deferred
 
 
+def default_branch():
+    r = subprocess.run(
+        ["gh", "repo", "view", repo, "--json", "defaultBranchRef",
+         "-q", ".defaultBranchRef.name"],
+        capture_output=True, text=True,
+    )
+    return r.stdout.strip() or "main"
+
+
+def _issue_body(n):
+    try:
+        data = gh_json(["issue", "view", str(n), "--repo", repo, "--json", "body"])
+    except SystemExit:
+        return ""
+    return (data or {}).get("body") or ""
+
+
+def base_branch_for_issue(n):
+    """Branch issue N must fork from: the head of its topmost open-PR dep.
+
+    With several open-PR deps, the topmost is the one no other candidate
+    depends on (its branch transitively contains the others). Falls back to
+    the highest issue number, then to the repo default branch when no dep
+    has an open PR.
+    """
+    deps = parse_depends_on(_issue_body(n), n)
+    idx = open_pr_index()
+    cands = [d for d in deps if d in idx and dep_status(d) == "pr_open"]
+    if not cands:
+        return default_branch()
+    if len(cands) == 1:
+        return idx[cands[0]]["head"]
+    dep_sets = {d: parse_depends_on(_issue_body(d), d) for d in cands}
+    tops = [d for d in cands if not any(d in dep_sets[o] for o in cands if o != d)]
+    pick = max(tops) if tops else max(cands)
+    return idx[pick]["head"]
+
+
 def main():
     global repo
     repo = os.environ["REPO_MATCH"]
     ready_label = os.environ.get("READY_LABEL", "ready")
     mode = os.environ.get("MODE", "pick")
+
+    if mode == "base":
+        print(base_branch_for_issue(int(os.environ["ISSUE_N"])))
+        return
 
     ordered, deferred = compute_queue(ready_label)
 
@@ -218,7 +311,11 @@ def main():
         for c in ordered:
             dep_s = ""
             if c["deps"]:
-                dep_s = " deps=[" + ",".join(f"#{d}" for d in sorted(c["deps"])) + "]"
+                parts = []
+                for d in sorted(c["deps"]):
+                    mark = "(pr-open)" if c.get("dep_statuses", {}).get(d) == "pr_open" else ""
+                    parts.append(f"#{d}{mark}")
+                dep_s = " deps=[" + ",".join(parts) + "]"
             print(f"#{c['n']} ({c['rank_label']}){dep_s} {c['title']}")
         for c in deferred:
             print(

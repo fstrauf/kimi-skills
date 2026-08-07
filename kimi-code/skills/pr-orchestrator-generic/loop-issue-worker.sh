@@ -10,6 +10,7 @@
 #
 # Agent label machine (REST only — no Projects/GraphQL):
 #   ready → agent-working → (land) close issue
+#                        → awaiting-merge (PR open/stacked; dependents chain on)
 #                        → agent-failed (no ready; re-add ready to retry)
 #                        → ready again on interrupt
 #
@@ -62,6 +63,14 @@ fi
 claim_issue_for_loop "$ISSUE"
 log "Claimed #$ISSUE (labels: -ready +agent-working)"
 
+# Stack-through: resolve which branch this issue builds on. When a dependency
+# has an open (unmerged) PR, this is that PR's head branch — the agent forks
+# from it and opens the PR against it, so the loop never waits on a merge.
+ORCH_BASE_BRANCH=$(issue_base_branch "$ISSUE" 2>/dev/null || true)
+ORCH_BASE_BRANCH=${ORCH_BASE_BRANCH:-$(default_branch_name)}
+export ORCH_BASE_BRANCH
+log "Base branch for #$ISSUE: $ORCH_BASE_BRANCH"
+
 # --- Run the orchestrator ----------------------------------------------------
 
 cmd_display=$(orch_cmd_display "$ISSUE")
@@ -81,6 +90,7 @@ export ORCH_STACK_READY="${ORCH_STACK_READY:-0}"
   ORCH_STACK_CLI="$ORCH_STACK_CLI" \
   ORCH_STACK_REPO_OK="$ORCH_STACK_REPO_OK" \
   ORCH_STACK_READY="$ORCH_STACK_READY" \
+  ORCH_BASE_BRANCH="$ORCH_BASE_BRANCH" \
   "$ORCH_CLI" -p "$ORCH_SKILL $ISSUE" $ORCH_CLI_ARGS) \
   > "$LOG_DIR/issue-$ISSUE.log" 2>&1 &
 AGENT_PID=$!
@@ -108,12 +118,43 @@ fi
 
 log "Issue #$ISSUE: orchestrator finished OK (exit 0)"
 
+DEFAULT_BR=$(default_branch_name)
+open_line=$(find_open_pr_for_issue "$ISSUE" || true)
+pr_n=""; pr_url=""; pr_base=""
+if [ -n "$open_line" ]; then
+  pr_n=$(printf '%s' "$open_line" | cut -f1)
+  pr_url=$(printf '%s' "$open_line" | cut -f2)
+  pr_base=$(gh pr view "$pr_n" --repo "$REPO" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
+fi
+
+# Stacked layer: the PR targets another PR's branch, not the default branch.
+# Merging from the loop would flatten the chain — park as awaiting-merge and
+# let the loop move on to issues that stack on top of this one.
+if [ -n "$pr_n" ] && [ -n "$pr_base" ] && [ "$pr_base" != "$DEFAULT_BR" ]; then
+  link_stack_chain "$pr_n"
+  if [ "${ORCH_STACK_AUTOLAND:-0}" = "1" ]; then
+    log "ORCH_STACK_AUTOLAND=1 — attempting gh stack merge up to PR #$pr_n"
+    if merge_pr_via_stack "$pr_n"; then
+      release_issue_success "$ISSUE"
+      gh issue close "$ISSUE" --repo "$REPO" --comment "Closed after stack autoland of PR #$pr_n." >/dev/null 2>&1 || true
+      notify "$ISSUE" "Done — stack-landed via gh stack merge. $pr_url"
+      return_to_main || log "WARNING: could not return to clean main after stack autoland"
+      exit 0
+    fi
+    log "Stack autoland failed for PR #$pr_n — parking as awaiting-merge"
+  fi
+  release_issue_awaiting_merge "$ISSUE"
+  log "Issue #$ISSUE stacked on '$pr_base' (PR #$pr_n) — awaiting-merge; loop continues"
+  notify "$ISSUE" "orchestrator green — PR stacked on \`$pr_base\`: $pr_url. Labeled \`awaiting-merge\`. Land the chain with \`gh stack merge $pr_n --yes --squash\` (or merge bottom-up); dependents keep building on it meanwhile."
+  return_to_main || true
+  exit 0
+fi
+
 # Optional: leave PR open for human merge
 if [ "${ORCH_AUTO_MERGE:-1}" != "1" ]; then
-  release_issue_success "$ISSUE"
-  # Keep issue open; remove ready so not re-picked until user re-queues or closes
-  pr_url=$(find_open_pr_for_issue "$ISSUE" | cut -f2 || true)
-  notify "$ISSUE" "orchestrator green (ORCH_AUTO_MERGE=0).${pr_url:+ PR: $pr_url} Add \`ready\` only if you want the loop to try again."
+  release_issue_awaiting_merge "$ISSUE"
+  # Keep issue open; awaiting-merge so dependents can stack onto the PR branch
+  notify "$ISSUE" "orchestrator green (ORCH_AUTO_MERGE=0).${pr_url:+ PR: $pr_url} Labeled \`awaiting-merge\` — merge the PR to close."
   return_to_main || true
   exit 0
 fi
@@ -131,15 +172,26 @@ if land_issue_pr "$ISSUE"; then
   exit 0
 fi
 
+# Land failed on a default-branch PR — optional stack autoland escape hatch.
+if [ "${ORCH_STACK_AUTOLAND:-0}" = "1" ] && [ -n "$pr_n" ] && gh_stack_cli_available; then
+  link_stack_chain "$pr_n"
+  log "ORCH_STACK_AUTOLAND=1 — land failed, trying gh stack merge for PR #$pr_n"
+  if merge_pr_via_stack "$pr_n"; then
+    release_issue_success "$ISSUE"
+    gh issue close "$ISSUE" --repo "$REPO" --comment "Closed after stack autoland of PR #$pr_n." >/dev/null 2>&1 || true
+    notify "$ISSUE" "Done — stack-landed via gh stack merge. $pr_url"
+    return_to_main || log "WARNING: could not return to clean main after stack autoland"
+    exit 0
+  fi
+fi
+
 # Land failed
-open_line=$(find_open_pr_for_issue "$ISSUE" || true)
-if [ -n "$open_line" ]; then
-  pr_url=$(printf '%s' "$open_line" | cut -f2)
-  # PR exists but not landed — leave open, no ready, no agent-failed (human merge)
-  remove_label "$ISSUE" "agent-working"
-  remove_label "$ISSUE" "${ORCH_READY_LABEL:-ready}"
-  notify "$ISSUE" "orchestrator green but land failed — PR open for you.${pr_url:+ $pr_url}"
-  log "Land failed for #$ISSUE but open PR exists — left open without ready"
+if [ -n "$pr_n" ]; then
+  # PR exists but not landed — park as awaiting-merge so dependents stack on
+  # it instead of deferring forever.
+  release_issue_awaiting_merge "$ISSUE"
+  notify "$ISSUE" "orchestrator green but land failed — PR open for you.${pr_url:+ $pr_url} Labeled \`awaiting-merge\`; dependents will stack onto its branch."
+  log "Land failed for #$ISSUE but open PR exists — parked as awaiting-merge"
   return_to_main || true
   exit 0
 fi

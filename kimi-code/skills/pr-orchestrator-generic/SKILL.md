@@ -176,6 +176,23 @@ git knobs (`rerere`, `remote.pushDefault`). Env exported into the agent process:
 | `ORCH_STACK_CLI` | `1` if `gh stack` works |
 | `ORCH_STACK_REPO_OK` | `1` if Stacks API answered 2xx for this repo |
 | `ORCH_STACK_READY` | `1` only when both CLI + repo probe OK |
+| `ORCH_BASE_BRANCH` | Branch this issue must fork from (default branch when unset). pr-loop sets it to a dependency's open-PR head when stacking through an unmerged chain |
+
+### Loop-driven dependency chains (`ORCH_BASE_BRANCH`)
+
+pr-loop ships whole `## Depends on` chains without waiting for human merges:
+when a dependency's PR is still open, the loop exports `ORCH_BASE_BRANCH` as
+that PR's head branch and the issue is labeled `awaiting-merge` after its own
+PR opens. The agent contract:
+
+1. Fork the feature branch from `origin/$ORCH_BASE_BRANCH` (not from the
+   default branch).
+2. Open the PR with `--base "$ORCH_BASE_BRANCH"` so GitHub shows only this
+   layer's diff.
+3. All diff ranges (review, fix verification) use `origin/$ORCH_BASE_BRANCH...HEAD`.
+4. **Never merge** such a PR from the agent or loop worker — the human lands
+   the whole chain with `gh stack merge <top-pr> --yes --squash` (or merges
+   bottom-up), and the next loop run restacks whatever remains.
 
 There is **no public GitHub API to flip “enable Stacked PRs” on a repo**. If the probe
 returns 404, log it and stay on the classic path (user must enable via plan / UI / waitlist).
@@ -284,10 +301,11 @@ Optional host-specific extras (do not require them):
 5. Detect stack CLI + mode (see **GitHub Stacked PRs** above): `STACK_CLI`, `ORCH_STACK`.
 6. Shell: `gh issue view <number> --json title,body,labels,number,state,url`.
 7. If the issue is closed, stop and report.
-8. If on `main` or `master`, create the feature branch:
+8. Resolve the base branch: `BASE="${ORCH_BASE_BRANCH:-<default branch>}"`. When the loop exports `ORCH_BASE_BRANCH`, this issue stacks on an unmerged dependency PR — fork from it, never from the default branch (see *Loop-driven dependency chains*).
+9. If on `main` or `master`, create the feature branch:
    - **Stack path** (`ORCH_STACK=1` and `STACK_CLI=1`): `gh stack init "feature/<issue-number>-<slug>"`
-   - **Classic path** (default / auto): `git checkout -b feature/<issue-number>-<slug>`
-9. Create todos (Kimi: `TodoList` · Grok: `todo_write`, merge false on first create):
+   - **Classic path** (default / auto): `git fetch origin "$BASE" && git checkout -b feature/<issue-number>-<slug> "origin/$BASE"`
+10. Create todos (Kimi: `TodoList` · Grok: `todo_write`, merge false on first create):
    - Understand issue
    - Implement
    - Open draft PR
@@ -351,7 +369,10 @@ EOF
 
 ```bash
 git push -u origin <branch>
+# When ORCH_BASE_BRANCH is set (stacked on an unmerged dep PR), target it:
+#   gh pr create --draft --base "$ORCH_BASE_BRANCH" ...
 gh pr create --draft \
+  ${ORCH_BASE_BRANCH:+--base "$ORCH_BASE_BRANCH"} \
   --title "<issue title>" \
   --body "$(cat <<'EOF'
 Closes #<N>
@@ -414,8 +435,9 @@ WHILE true:
        - gh pr comment: "🛑 Automated review stopped after 3 iterations. Remaining findings require human triage."
        - Report to user / optional blocked goal
   3. Mark todo "Review loop (iteration N/3)"
-  4. Changed files:
-       git diff --name-only origin/main...HEAD 2>/dev/null \
+  4. Changed files (base = `ORCH_BASE_BRANCH` when set — never diff a stacked
+     branch against the default branch, that shows the whole chain):
+       git diff --name-only "origin/${ORCH_BASE_BRANCH:-main}...HEAD" 2>/dev/null \
          || git diff --name-only origin/master...HEAD \
          || git diff --name-only HEAD~1
   5. Spawn reviewer subagent (prompt below), background, wait for completion
@@ -447,7 +469,7 @@ Instead, use your host's read-file tool to read this file IN FULL before inspect
 
 If you cannot read that file, respond with exactly `BASELINE: MISSING` and nothing else, then stop.
 
-Then inspect the diff (prefer origin/main...HEAD or origin/master...HEAD) and produce a structured verdict.
+Then inspect the diff (prefer `origin/$ORCH_BASE_BRANCH...HEAD` when `ORCH_BASE_BRANCH` is set, else origin/main...HEAD or origin/master...HEAD) and produce a structured verdict.
 
 Your response must use this exact format:
 
