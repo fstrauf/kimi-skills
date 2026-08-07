@@ -1,0 +1,1 @@
+/Users/fstrauf/01_code/pageseeds/.agents/skills/keyword-explore/SKILL.md
