@@ -496,40 +496,19 @@ ensure_gh_stack_ready() {
   return 0
 }
 
+# Canonical open-PR chain graph — all parent/child/chain/stale questions go
+# through pr_chain.py (unit-tested in tests/test_pr_chain.py). These wrappers
+# stay thin on purpose; do not re-grow inline python heredocs here.
+_pr_chain_py() {
+  echo "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr_chain.py"
+}
+
 # True if open PR $1 is part of a multi-PR base/head chain in $REPO
 # (parent and/or child open PR). Standalone PRs targeting trunk return false.
 pr_is_in_open_stack() {
   local pr=$1
   [ -n "$pr" ] && [ -n "${REPO:-}" ] || return 1
-  REPO_MATCH="$REPO" PR_N="$pr" python3 - <<'PY'
-import json, os, subprocess, sys
-repo = os.environ["REPO_MATCH"]
-pr_n = int(os.environ["PR_N"])
-try:
-    default = subprocess.check_output(
-        ["gh", "repo", "view", repo, "--json", "defaultBranchRef",
-         "-q", ".defaultBranchRef.name"],
-        text=True,
-    ).strip() or "main"
-    raw = subprocess.check_output(
-        ["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
-         "--json", "number,headRefName,baseRefName"],
-        text=True,
-    )
-except subprocess.CalledProcessError:
-    sys.exit(1)
-prs = json.loads(raw)
-by_num = {p["number"]: p for p in prs}
-target = by_num.get(pr_n)
-if not target:
-    sys.exit(1)
-by_head = {p["headRefName"]: p for p in prs if p.get("headRefName")}
-base = target.get("baseRefName") or ""
-head = target.get("headRefName") or ""
-has_parent = bool(base and base != default and base in by_head)
-has_child = any((p.get("baseRefName") or "") == head for p in prs if p["number"] != pr_n)
-sys.exit(0 if (has_parent or has_child) else 1)
-PY
+  REPO_MATCH="$REPO" python3 "$(_pr_chain_py)" in-stack "$pr" >/dev/null 2>&1
 }
 
 # Print space-separated open PR numbers from stack bottom up to and including $1.
@@ -537,45 +516,7 @@ PY
 stack_prs_up_to() {
   local pr=$1
   [ -n "$pr" ] && [ -n "${REPO:-}" ] || return 1
-  REPO_MATCH="$REPO" PR_N="$pr" python3 - <<'PY'
-import json, os, subprocess, sys
-repo = os.environ["REPO_MATCH"]
-pr_n = int(os.environ["PR_N"])
-try:
-    default = subprocess.check_output(
-        ["gh", "repo", "view", repo, "--json", "defaultBranchRef",
-         "-q", ".defaultBranchRef.name"],
-        text=True,
-    ).strip() or "main"
-    raw = subprocess.check_output(
-        ["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
-         "--json", "number,headRefName,baseRefName"],
-        text=True,
-    )
-except subprocess.CalledProcessError:
-    sys.exit(1)
-prs = json.loads(raw)
-by_num = {p["number"]: p for p in prs}
-by_head = {p["headRefName"]: p for p in prs if p.get("headRefName")}
-target = by_num.get(pr_n)
-if not target:
-    sys.exit(1)
-chain = []
-cur = target
-seen = set()
-while cur and cur["number"] not in seen:
-    seen.add(cur["number"])
-    chain.append(cur["number"])
-    base = cur.get("baseRefName") or ""
-    if not base or base == default:
-        break
-    parent = by_head.get(base)
-    if not parent:
-        break
-    cur = parent
-chain.reverse()
-print(" ".join(str(n) for n in chain))
-PY
+  REPO_MATCH="$REPO" python3 "$(_pr_chain_py)" chain-up-to "$pr" 2>/dev/null
 }
 
 # Decide whether land should use `gh stack merge` for PR $1.
@@ -711,34 +652,8 @@ link_stack_chain() {
 # Print "number<TAB>url<TAB>isDraft" for the open PR that closes $1, or empty.
 find_open_pr_for_issue() {
   local issue=$1
-  [ -n "${REPO:-}" ] || return 1  REPO_MATCH="$REPO" ISSUE_N="$issue" python3 - <<'PY'
-import json, os, re, subprocess, sys
-repo = os.environ["REPO_MATCH"]
-n = os.environ["ISSUE_N"]
-raw = subprocess.check_output(
-    ["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "50",
-     "--json", "number,url,isDraft,headRefName,body,title"],
-    text=True,
-)
-prs = json.loads(raw)
-pat_close = re.compile(rf"(?i)(?:closes|fixes|resolves)\s+#0*{re.escape(n)}\b")
-pat_branch = re.compile(rf"(?i)(?:^|/)(?:feature|fix|chore|issue)[/-]0*{re.escape(n)}(?:[-/]|$)")
-# Prefer explicit Closes #N in body, then branch name feature/<n>-...
-for prefer_body in (True, False):
-    for pr in prs:
-        body = pr.get("body") or ""
-        title = pr.get("title") or ""
-        head = pr.get("headRefName") or ""
-        if prefer_body:
-            if pat_close.search(body) or pat_close.search(title):
-                print(f"{pr['number']}\t{pr['url']}\t{str(pr.get('isDraft')).lower()}")
-                raise SystemExit(0)
-        else:
-            if pat_branch.search(head) or re.search(rf"(?i)\b#0*{re.escape(n)}\b", title):
-                print(f"{pr['number']}\t{pr['url']}\t{str(pr.get('isDraft')).lower()}")
-                raise SystemExit(0)
-sys.exit(0)
-PY
+  [ -n "${REPO:-}" ] || return 1
+  REPO_MATCH="$REPO" python3 "$(_pr_chain_py)" for-issue "$issue" 2>/dev/null
 }
 
 # Land PR $1 onto the default branch via local squash + push.
@@ -1326,35 +1241,22 @@ recover_stuck_agent_working() {
 }
 
 # Best-effort restack of open PR chains whose bottom PR was merged since the
-# last run (human merged the stack bottom). For each open PR whose base branch
-# no longer exists on origin (deleted after its PR merged), run gh stack's
-# cascading rebase + push so the surviving layers sit on the default branch.
+# last run (human merged the stack bottom). A PR is stale when its base branch
+# is not the default branch and no *open* PR owns that head anymore (parent
+# merged or closed — with or without branch deletion). gh stack's cascading
+# rebase + push then re-sits the surviving layers onto the default branch.
 # Safe unattended: gh stack rebase aborts and restores on conflict; any
 # failure is logged and left for a human (`gh stack sync`). Never fatal.
 restack_open_chains() {
   [ "${ORCH_STACK:-auto}" = "0" ] && return 0
   gh_stack_cli_available || return 0
+  # Skip on repos where the Stacks API probe failed (404 etc.) — otherwise
+  # every loop start logs misleading "left for human" advice.
+  [ "${ORCH_STACK_REPO_OK:-0}" = "1" ] || return 0
   [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR/.git" ] || return 0
 
   local stale pr base
-  stale=$(
-    REPO_MATCH="$REPO" DEFAULT_BR="$(default_branch_name)" REPO_DIR_Q="$REPO_DIR" python3 - <<'PY' 2>/dev/null || true
-import json, os, subprocess
-repo = os.environ["REPO_MATCH"]
-default = os.environ["DEFAULT_BR"]
-prs = json.loads(subprocess.check_output(
-    ["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
-     "--json", "number,baseRefName"], text=True))
-remote = subprocess.check_output(
-    ["git", "-C", os.environ.get("REPO_DIR_Q", "."), "ls-remote", "--heads", "origin"],
-    text=True, stderr=subprocess.DEVNULL)
-remote_heads = {ln.rsplit("/", 1)[-1] for ln in remote.splitlines() if ln.strip()}
-for p in prs:
-    b = p.get("baseRefName") or ""
-    if b and b != default and b not in remote_heads:
-        print(p["number"])
-PY
-  )
+  stale=$(REPO_MATCH="$REPO" python3 "$(_pr_chain_py)" stale-bases 2>/dev/null || true)
   [ -n "$stale" ] || return 0
 
   for pr in $stale; do

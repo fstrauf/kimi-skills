@@ -39,6 +39,8 @@ import subprocess
 import sys
 from collections import defaultdict
 
+import pr_chain  # canonical open-PR graph (issue↔PR matching lives there)
+
 # Set by main() from REPO_MATCH; tests may set it directly.
 repo = ""
 
@@ -111,14 +113,13 @@ def issue_meta(n):
 def open_pr_index():
     """Map issue number -> {"pr", "head"} for open PRs that close it.
 
-    Matches `Closes/Fixes/Resolves #N` in body/title and the conventional
-    `feature/<N>-…` branch name. Built lazily, cached per process; tests may
-    seed `_pr_index` directly.
+    Fetch goes through this module's gh_json (test-fakeable); the matching
+    rules are pr_chain.issue_pr_index — the single canonical implementation.
+    Tests may seed `_pr_index` directly.
     """
     global _pr_index
     if _pr_index is not None:
         return _pr_index
-    idx = {}
     try:
         prs = gh_json([
             "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
@@ -126,17 +127,8 @@ def open_pr_index():
         ])
     except SystemExit:
         prs = []
-    for pr in prs or []:
-        head = pr.get("headRefName") or ""
-        blob = f"{pr.get('body') or ''}\n{pr.get('title') or ''}"
-        nums = {int(x) for x in re.findall(r"(?i)(?:closes|fixes|resolves)\s+#(\d+)", blob)}
-        m = re.search(r"(?i)(?:^|/)(?:feature|fix|chore|issue)[/-](\d+)(?:[-/]|$)", head)
-        if m:
-            nums.add(int(m.group(1)))
-        for n in nums:
-            idx.setdefault(n, {"pr": pr["number"], "head": head})
-    _pr_index = idx
-    return idx
+    _pr_index = pr_chain.issue_pr_index(prs or [])
+    return _pr_index
 
 
 def dep_status(dep):

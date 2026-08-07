@@ -42,6 +42,23 @@ on_interrupt() {
 }
 trap on_interrupt INT TERM
 
+# Single success epilogue for every land path: drop loop labels, close the
+# issue, notify, restore the checkout. Always exits 0.
+finish_landed() { # <issue> <pr-url> <close-comment> <notify-message>
+  local issue=$1 url=$2 comment=$3 msg=$4
+  release_issue_success "$issue"
+  local istate
+  istate=$(gh issue view "$issue" --repo "$REPO" --json state -q .state 2>/dev/null || echo "")
+  if [ "$istate" = "OPEN" ]; then
+    gh issue close "$issue" --repo "$REPO" --comment "$comment" >/dev/null 2>&1 \
+      && log "Closed issue #$issue" \
+      || log "WARNING: could not close issue #$issue"
+  fi
+  notify "$issue" "$msg${url:+ $url}"
+  return_to_main || log "WARNING: could not return to clean main after land"
+  exit 0
+}
+
 log "Worker start issue=#$ISSUE repo=$REPO (REST labels only; ORCH_BOARD=${ORCH_BOARD:-0})"
 
 return_to_main || exit 42
@@ -127,6 +144,23 @@ if [ -n "$open_line" ]; then
   pr_base=$(gh pr view "$pr_n" --repo "$REPO" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
 fi
 
+# Safety: the issue was meant to stack on ORCH_BASE_BRANCH but the agent opened
+# the PR against the default branch. Merging it would silently land every
+# unmerged layer underneath — retarget, and if that fails, park. Never land
+# such a PR from the loop.
+if [ -n "$pr_n" ] && [ "$ORCH_BASE_BRANCH" != "$DEFAULT_BR" ] && [ "$pr_base" = "$DEFAULT_BR" ]; then
+  log "PR #$pr_n targets $DEFAULT_BR but issue stacks on $ORCH_BASE_BRANCH — retargeting"
+  if gh pr edit "$pr_n" --repo "$REPO" --base "$ORCH_BASE_BRANCH" >/dev/null 2>&1; then
+    pr_base="$ORCH_BASE_BRANCH"
+  else
+    log "WARNING: could not retarget PR #$pr_n to $ORCH_BASE_BRANCH — parking, no land attempted"
+    release_issue_awaiting_merge "$ISSUE"
+    notify "$ISSUE" "orchestrator green, but the PR targets \`$DEFAULT_BR\` while this issue stacks on \`$ORCH_BASE_BRANCH\`, and retargeting failed: $pr_url. Parked as \`awaiting-merge\`; retarget with \`gh pr edit $pr_n --base $ORCH_BASE_BRANCH\`."
+    return_to_main || true
+    exit 0
+  fi
+fi
+
 # Stacked layer: the PR targets another PR's branch, not the default branch.
 # Merging from the loop would flatten the chain — park as awaiting-merge and
 # let the loop move on to issues that stack on top of this one.
@@ -135,11 +169,7 @@ if [ -n "$pr_n" ] && [ -n "$pr_base" ] && [ "$pr_base" != "$DEFAULT_BR" ]; then
   if [ "${ORCH_STACK_AUTOLAND:-0}" = "1" ]; then
     log "ORCH_STACK_AUTOLAND=1 — attempting gh stack merge up to PR #$pr_n"
     if merge_pr_via_stack "$pr_n"; then
-      release_issue_success "$ISSUE"
-      gh issue close "$ISSUE" --repo "$REPO" --comment "Closed after stack autoland of PR #$pr_n." >/dev/null 2>&1 || true
-      notify "$ISSUE" "Done — stack-landed via gh stack merge. $pr_url"
-      return_to_main || log "WARNING: could not return to clean main after stack autoland"
-      exit 0
+      finish_landed "$ISSUE" "$pr_url" "Closed after stack autoland of PR #$pr_n." "Done — stack-landed via gh stack merge."
     fi
     log "Stack autoland failed for PR #$pr_n — parking as awaiting-merge"
   fi
@@ -160,16 +190,7 @@ if [ "${ORCH_AUTO_MERGE:-1}" != "1" ]; then
 fi
 
 if land_issue_pr "$ISSUE"; then
-  release_issue_success "$ISSUE"
-  istate=$(gh issue view "$ISSUE" --repo "$REPO" --json state -q .state 2>/dev/null || echo "")
-  if [ "$istate" = "OPEN" ]; then
-    gh issue close "$ISSUE" --repo "$REPO" --comment "Closed after successful auto-land to default branch (pr-loop)." >/dev/null 2>&1 \
-      && log "Closed issue #$ISSUE" \
-      || log "WARNING: could not close issue #$ISSUE"
-  fi
-  notify "$ISSUE" "Done — landed on main.${LAND_PR_URL:+ $LAND_PR_URL}"
-  return_to_main || log "WARNING: could not return to clean main after success"
-  exit 0
+  finish_landed "$ISSUE" "$LAND_PR_URL" "Closed after successful auto-land to default branch (pr-loop)." "Done — landed on $DEFAULT_BR."
 fi
 
 # Land failed on a default-branch PR — optional stack autoland escape hatch.
@@ -177,11 +198,7 @@ if [ "${ORCH_STACK_AUTOLAND:-0}" = "1" ] && [ -n "$pr_n" ] && gh_stack_cli_avail
   link_stack_chain "$pr_n"
   log "ORCH_STACK_AUTOLAND=1 — land failed, trying gh stack merge for PR #$pr_n"
   if merge_pr_via_stack "$pr_n"; then
-    release_issue_success "$ISSUE"
-    gh issue close "$ISSUE" --repo "$REPO" --comment "Closed after stack autoland of PR #$pr_n." >/dev/null 2>&1 || true
-    notify "$ISSUE" "Done — stack-landed via gh stack merge. $pr_url"
-    return_to_main || log "WARNING: could not return to clean main after stack autoland"
-    exit 0
+    finish_landed "$ISSUE" "$pr_url" "Closed after stack autoland of PR #$pr_n." "Done — stack-landed via gh stack merge."
   fi
 fi
 
