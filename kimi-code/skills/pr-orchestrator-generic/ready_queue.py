@@ -14,10 +14,10 @@ Env interface (unchanged from the loop-common.sh heredoc):
 Fixes vs the old inline version:
   * parse_depends_on: a "## Depends on" section whose first line declares
     none ("None", "_None_", "_None_ — independent of #123") yields NO deps.
-    The old `\bnone\b` check never matched "_None_" (underscore is a regex
-    word character), so companion/context #N mentions became real deps and
-    parked issues. The section is also excluded from the prose regex scans
-    so it is never double-parsed.
+    Only leading `#N` on a section line counts (optional bullet). Trailing
+    "PR #281" / "until #279" in that line or later sections are not deps.
+    Strong prose outside the section is only `do not start until #N` /
+    `blocked until|on #N`. Casual "after #275" is ignored.
   * dep_status: MERGED (a dep referencing a pull request) counts as
     satisfied, and unresolvable refs (neither issue nor PR) no longer defer
     an issue forever — they are treated as satisfied with a stderr note.
@@ -72,6 +72,29 @@ def _section_declares_none(section: str) -> bool:
     return bool(re.match(r"(?i)^[*_\-—–\s]*none(?:[\s*_\-—–.:]|$)", first))
 
 
+_BULLET_DEP = re.compile(r"^[-*]\s*#(\d+)\b")
+_BARE_DEP = re.compile(r"^#(\d+)\b")
+# Strong prose only — not "Vue stays until #279" or "after #275 strip".
+_STRONG_PROSE_DEP = re.compile(
+    r"(?i)(?:do not start until|blocked(?:\s+on|\s+until))\s+#(\d+)\b"
+)
+
+
+def _deps_from_depends_section(section: str) -> set:
+    """Only leading `#N` on a line (optional bullet). Trailing 'PR #281' is not a dep."""
+    if _section_declares_none(section):
+        return set()
+    deps = set()
+    for raw in section.splitlines():
+        s = raw.strip()
+        if not s or s.lower().startswith("do not list"):
+            continue
+        m = _BULLET_DEP.match(s) or _BARE_DEP.match(s)
+        if m:
+            deps.add(int(m.group(1)))
+    return deps
+
+
 def parse_depends_on(body, self_n):
     if not body:
         return set()
@@ -79,19 +102,17 @@ def parse_depends_on(body, self_n):
     rest = body
     m = re.search(r"(?ims)^##\s*Depends on\s*\n(.*?)(?=^##\s|\Z)", body)
     if m:
-        section = m.group(1)
-        if not _section_declares_none(section):
-            deps.update(int(x) for x in re.findall(r"#(\d+)", section))
-        # The section is authoritatively handled above — never let the prose
-        # scans below re-parse it (that is where phantom deps came from).
+        deps |= _deps_from_depends_section(m.group(1))
+        # Section is authoritative — never re-scan it for casual #N mentions.
         rest = body[: m.start()] + body[m.end():]
     for mm in re.finditer(r"(?im)^(?!.*parent\s+epic).*depends on[:\s]+([^\n]+)", rest):
-        deps.update(int(x) for x in re.findall(r"#(\d+)", mm.group(1)))
-    for mm in re.finditer(
-        r"(?i)(?:do not start|blocked|until|after(?:\s+merging)?)\s[^\n]{0,80}",
-        rest,
-    ):
-        deps.update(int(x) for x in re.findall(r"#(\d+)", mm.group(0)))
+        line = mm.group(1).strip()
+        lead = _BULLET_DEP.match(line) or _BARE_DEP.match(line)
+        if lead:
+            deps.add(int(lead.group(1)))
+        else:
+            deps.update(int(x) for x in re.findall(r"#(\d+)", line))
+    deps.update(int(x) for x in _STRONG_PROSE_DEP.findall(rest))
     deps.discard(self_n)
     return deps
 
@@ -176,11 +197,10 @@ def compute_queue(ready_label):
         title = (issue.get("title") or "").strip()
         if re.match(r"(?i)^\s*(epic\b|\[epic\])", title):
             continue
-        prs = gh_json([
-            "pr", "list", "--repo", repo, "--state", "open",
-            "--search", f"Closes #{n} in:body", "--json", "number",
-        ])
-        if prs:
+        # Must use pr_chain (Closes/Fixes/Resolves + feature/N- branch).
+        # Never `gh pr list --search "Closes #N in:body"` — GitHub ANDs tokens,
+        # so a PR that says "Closes #275" and later mentions "#272" parks #272.
+        if n in open_pr_index():
             continue
         rank = next((i for i, p in enumerate(LABEL_PRIORITIES) if p in labels), 99)
         rank_label = {0: "P0", 1: "P1", 2: "P2", 3: "P3"}.get(rank, "no-priority")
@@ -225,22 +245,29 @@ def compute_queue(ready_label):
                 edges[d].append(c["n"])
                 indeg[c["n"]] += 1
 
+    def _pick_key(n):
+        # Prefer continuing an unmerged stack over starting unrelated same-P work.
+        continues = any(
+            s == "pr_open" for s in by_n[n].get("dep_statuses", {}).values()
+        )
+        return (by_n[n]["rank"], 0 if continues else 1, n)
+
     ready_q = [c["n"] for c in pickable if indeg[c["n"]] == 0]
-    ready_q.sort(key=lambda n: (by_n[n]["rank"], n))
+    ready_q.sort(key=_pick_key)
     ordered = []
     while ready_q:
         n = ready_q.pop(0)
         ordered.append(by_n[n])
-        for m in sorted(edges[n], key=lambda x: (by_n[x]["rank"], x)):
+        for m in sorted(edges[n], key=_pick_key):
             indeg[m] -= 1
             if indeg[m] == 0:
                 ready_q.append(m)
-                ready_q.sort(key=lambda x: (by_n[x]["rank"], x))
+                ready_q.sort(key=_pick_key)
 
     if len(ordered) < len(pickable):
         seen = {c["n"] for c in ordered}
         rest = [c for c in pickable if c["n"] not in seen]
-        rest.sort(key=lambda c: (c["rank"], c["n"]))
+        rest.sort(key=lambda c: _pick_key(c["n"]))
         ordered.extend(rest)
 
     return ordered, deferred

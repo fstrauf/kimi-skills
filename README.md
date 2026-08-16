@@ -90,6 +90,8 @@ Grok does **not** scan `.github/skills/` by default. Those trees are legacy / pr
 
 ---
 
+**Loop contract (labels, queues, handover):** [`docs/github-loop.md`](./docs/github-loop.md). Agents working in this repo: [`AGENTS.md`](./AGENTS.md).
+
 ## How to dice the PR orchestrator (multi-repo + multi-agent)
 
 You maintain many product repos and want the **same shipping loop** everywhere, on **Kimi and Grok** (and later other agents). Dice it in three layers — do **not** fork the whole loop per repo or per agent.

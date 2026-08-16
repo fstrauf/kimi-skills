@@ -8,7 +8,8 @@
 #
 # Default queue (no manual enqueue):
 #   every open issue in REPO that is NOT an Epic and NOT already in the ship
-#   pipeline (ready / agent-working / agent-failed / blocked).
+#   pipeline (ready / agent-working / agent-failed / blocked / needs-input /
+#   awaiting-merge, or an open Closes #N PR).
 #
 # Optional legacy mode:
 #   ORCH_SCOPE_REQUIRE_LABEL=1  → only issues labeled `scoping` (old behavior)
@@ -46,7 +47,8 @@ Optional:
 Queue (REST, default):
   All open non-epic issues that are not already shipped/queued:
     skip: Epic: / [Epic] titles
-    skip: labels ready, agent-working, agent-failed, blocked
+    skip: labels ready, agent-working, agent-failed, blocked, needs-input, awaiting-merge
+    skip: open PR that closes the issue (Closes/Fixes/Resolves #N or feature/N- branch)
   Optional: ORCH_SCOPE_REQUIRE_LABEL=1 → only label `scoping` (legacy)
 
   After success: -scoping +ready  (unless needs-input / true external blocked)
@@ -191,64 +193,15 @@ promote_triage_ready_orphans log
 # Heal false "blocked on open sibling" parks → +ready (code deps ≠ park).
 heal_false_dependency_blocks log
 
-# Snapshot open issues that need scoping (REST).
-# Default: every open non-epic issue not already in ship/failed/blocked pipeline.
+# Snapshot open issues that need scoping (REST). See scope_queue.py.
+# Default: every open non-epic issue not already in ship/failed/parked pipeline.
 # Legacy: ORCH_SCOPE_REQUIRE_LABEL=1 → only label scoping.
 ISSUES=$(
   REPO_MATCH="$REPO" \
   SCOPING_LABEL="$ORCH_SCOPING_LABEL" \
   READY_LABEL="$ORCH_READY_LABEL" \
   REQUIRE_LABEL="$ORCH_SCOPE_REQUIRE_LABEL" \
-  python3 - <<'PY' 2>"$LOGDIR/issue-list.err" || true
-import json, os, subprocess, sys
-
-repo = os.environ["REPO_MATCH"]
-scoping = os.environ.get("SCOPING_LABEL", "scoping")
-ready = os.environ.get("READY_LABEL", "ready")
-require = os.environ.get("REQUIRE_LABEL", "0").strip() in ("1", "true", "TRUE", "yes", "YES")
-
-# Ship / do-not-touch labels — already past "needs scope" or owned by pr-loop.
-# NOTE: do NOT skip triage:ready-to-implement here. That label is metadata only;
-# orphans are healed to +ready by promote_triage_ready_orphans before this
-# snapshot. Skipping it without +ready created permanent purgatory (neither
-# scope-loop nor pr-loop would pick the issue).
-skip_labels = {
-    ready,
-    "agent-working",
-    "agent-failed",
-    "blocked",
-    "needs-input",
-}
-
-cmd = [
-    "gh", "issue", "list",
-    "--repo", repo,
-    "--state", "open",
-    "--limit", "100",
-    "--json", "number,title,labels",
-]
-if require:
-    cmd.extend(["--label", scoping])
-
-try:
-    raw = subprocess.check_output(cmd, text=True)
-except subprocess.CalledProcessError as e:
-    sys.stderr.write(e.stderr or str(e))
-    sys.exit(0)
-
-issues = json.loads(raw)
-out = []
-for it in issues:
-    title = it.get("title") or ""
-    if __import__("re").search(r"^\s*(epic\b|\[epic\])", title, __import__("re").I):
-        continue
-    names = {l.get("name") for l in (it.get("labels") or []) if l.get("name")}
-    if names & skip_labels:
-        continue
-    out.append(str(it["number"]))
-
-print(" ".join(out))
-PY
+  python3 "$SCRIPT_DIR/scope_queue.py" 2>"$LOGDIR/issue-list.err" || true
 )
 
 if [ -z "${ISSUES// /}" ]; then
@@ -257,7 +210,7 @@ if [ -z "${ISSUES// /}" ]; then
     log "Enqueue (legacy): gh issue edit N --repo $REPO --add-label $ORCH_SCOPING_LABEL"
   else
     log "No open non-epic issues needing scope for $REPO — nothing to do."
-    log "Queue skips: Epic titles, labels \`$ORCH_READY_LABEL\` / agent-working / agent-failed / blocked / needs-input."
+    log "Queue skips: Epic titles, labels \`$ORCH_READY_LABEL\` / agent-working / agent-failed / blocked / needs-input / awaiting-merge, open Closes #N PR."
     log "Note: triage:ready-to-implement orphans were healed to \`$ORCH_READY_LABEL\` above (if any) — run pr-loop to ship."
   fi
   exit 0
@@ -305,7 +258,7 @@ log "Scope loop start  profile=$LOOP_PROFILE  repo=$REPO  agent=$ORCH_AGENT"
 if [ "$ORCH_SCOPE_REQUIRE_LABEL" = "1" ]; then
   log "Queue:   REST label \`$ORCH_SCOPING_LABEL\` only (ORCH_SCOPE_REQUIRE_LABEL=1)"
 else
-  log "Queue:   all open non-epic issues not already ready/agent-*/blocked/needs-input"
+  log "Queue:   all open non-epic issues not already ready/agent-*/blocked/needs-input/awaiting-merge or an open Closes #N PR"
 fi
 log "After:   -$ORCH_SCOPING_LABEL +$ORCH_READY_LABEL (unless needs-input/external blocked)"
 log "Issues:  $ISSUES"
@@ -351,5 +304,7 @@ for N in $ISSUES; do
 done
 
 log "=== Loop complete: $ok succeeded, $fail failed, $skip skipped ==="
-log "Next: pr-loop --profile $LOOP_PROFILE --agent $ORCH_AGENT"
-[ "$fail" -eq 0 ]
+log "Next: pr-loop --profile $LOOP_PROFILE --agent $ORCH_AGENT   (or ship-loop to do both)"
+report_leftovers | while IFS= read -r line; do log "$line"; done
+# Fail-open: a scoped needs-input is success-park, not a failed run.
+exit 0

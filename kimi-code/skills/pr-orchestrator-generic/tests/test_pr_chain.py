@@ -60,6 +60,21 @@ class IssueMatchingTest(unittest.TestCase):
     def test_pr_for_issue_none(self):
         self.assertIsNone(pr_chain.pr_for_issue(PRS, 999))
 
+    def test_issues_referenced_in_closes_and_branch(self):
+        text = "Closes #10\nFixes #11\nfeature/12-top"
+        self.assertEqual(pr_chain.issues_referenced_in(text), {10, 11, 12})
+
+    def test_already_landed_open_pr_wins(self):
+        closed = [{"number": 10, "headRefName": "feature/10-base",
+                   "body": "Closes #10", "title": "old"}]
+        self.assertFalse(pr_chain.is_already_landed(10, PRS, closed))
+
+    def test_already_landed_closed_only(self):
+        closed = [{"number": 99, "headRefName": "feature/40-done",
+                   "body": "Closes #40", "title": "done"}]
+        self.assertTrue(pr_chain.is_already_landed(40, PRS, closed))
+        self.assertFalse(pr_chain.is_already_landed(41, PRS, closed))
+
 
 class ChainGraphTest(unittest.TestCase):
     def setUp(self):

@@ -28,7 +28,8 @@
 #     (default). Set ORCH_AUTO_CLEAN=0 to keep the old fail-hard behavior.
 #   * After each issue the worker returns to the default branch with
 #     `git checkout` + clean + `git pull --ff-only`.
-#   * 2 consecutive orchestrator failures abort the loop (circuit breaker).
+#   * Consecutive orchestrator failures are reported, not fatal (fail-open).
+#     Each failed ticket is labeled agent-failed; the loop continues.
 #
 # Interrupts (Ctrl-C): the worker catches INT/TERM, kills the agent process,
 # moves the issue back to Ready, and posts an @mention comment. There is no
@@ -138,10 +139,7 @@ Environment:
                       `gh stack merge --yes` when `gh pr merge` is blocked
                       (e.g. by a local gh shim). Bypasses human-merge guards —
                       opt in consciously.
-  ORCH_BOARD          0 (default) = board is view-only for humans; agents never
-                      write project status (avoids GraphQL burn). Still *reads*
-                      Ready column once per pick. Set 1 to auto-move cards.
-  BOARD_CACHE_TTL     seconds to cache project item-list (default 180)
+  (Board writes removed. REST labels are the queue — see docs/github-loop.md.)
 
 Examples:
   ./loop-ready-issues.sh --profile txApp --agent grok
@@ -280,7 +278,8 @@ fi
 # Per-profile lock so pageseeds + txApp loops can coexist (not same profile)
 LOCK_DIR="$HOME/.kimi-code/pr-loop.${LOOP_PROFILE}.lock"
 WORKER_SRC="$SCRIPT_DIR/loop-issue-worker.sh"
-CONSECUTIVE_FAILURE_LIMIT=2
+# Fail-open: never abort the run because N tickets failed.
+CONSECUTIVE_FAILURE_LIMIT="${ORCH_MAX_FAILURES:-0}"
 
 export REPO_DIR LOG_DIR HEARTBEAT_SECONDS MENTION_USER
 export ORCH_AGENT ORCH_CLI ORCH_SKILL ORCH_CLI_ARGS
@@ -317,7 +316,9 @@ command -v "$ORCH_CLI" >/dev/null || die "$ORCH_CLI CLI not on PATH (ORCH_AGENT=
 gh auth status >/dev/null 2>&1 || die "gh CLI not authenticated"
 [ -f "$WORKER_SRC" ] || die "Worker not found: $WORKER_SRC"
 mention_user || die "Could not determine your GitHub login — set MENTION_USER explicitly."
-return_to_main || die "Environment is not clean (see above) — stopping."
+if ! return_to_main; then
+  log "WARNING: main checkout dirty — issues run in worktrees; tracked edits on main are left untouched"
+fi
 ensure_loop_labels
 # Stack mode A bootstrap: install gh-stack if missing, probe repo Stacks API,
 # configure local git so non-interactive stack commands don't hang.
@@ -375,7 +376,13 @@ while true; do
     die "Failed to list issues with label ready (REST). Check 'gh auth status' and network."
   fi
   if [ -z "$pick" ]; then
-    log "No open issues with label \`${ORCH_READY_LABEL:-ready}\`. Done."
+    queue=$(ready_label_candidates list || true)
+    if printf '%s' "$queue" | grep -q DEFERRED; then
+      log "Ready queue has deferred issues (deps not shippable yet) — not Done:"
+      echo "$queue" | sed 's/^/    /'
+    else
+      log "No open issues with label \`${ORCH_READY_LABEL:-ready}\`."
+    fi
     break
   fi
   issue=$pick
@@ -395,19 +402,20 @@ while true; do
     log "Interrupted — exiting. Issue #$issue has label ready restored."
     exit "$rc"
   elif [ "$rc" -eq 42 ]; then
-    # Worker preflight failed (dirty tree / cannot reach main). This cannot
-    # self-heal, the board was not touched — stop now, don't count or retry.
-    die "Worker preflight failed for issue #$issue (see above). Fix the checkout, then re-run."
+    # Legacy preflight. Worktrees should make this rare — park and continue.
+    log "Worker preflight failed for #$issue — continuing (fail-open)."
+    consecutive_failures=$((consecutive_failures + 1))
   elif [ "$rc" -eq 0 ]; then
     consecutive_failures=0
     completed=$((completed + 1))
   else
     consecutive_failures=$((consecutive_failures + 1))
-    if [ "$consecutive_failures" -ge "$CONSECUTIVE_FAILURE_LIMIT" ]; then
-      die "$CONSECUTIVE_FAILURE_LIMIT consecutive failures — stopping. Check the logs in $LOG_DIR."
+    if [ "$CONSECUTIVE_FAILURE_LIMIT" -gt 0 ] && [ "$consecutive_failures" -ge "$CONSECUTIVE_FAILURE_LIMIT" ]; then
+      log "NOTE: $consecutive_failures consecutive failures (ORCH_MAX_FAILURES=$CONSECUTIVE_FAILURE_LIMIT) — continuing anyway (fail-open)."
     fi
   fi
 done
 
-return_to_main || die "Could not return the checkout to a clean main at the end of the run."
+return_to_main || log "WARNING: could not return main to a clean default branch (your tracked edits are intact)."
 log "Loop finished. $completed issue(s) processed (closed if landed)."
+report_leftovers | while IFS= read -r line; do log "$line"; done

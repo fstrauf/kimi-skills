@@ -44,6 +44,8 @@ ready → pr-loop implements the contract
 
 If you only rephrase the original ticket without reading the repo, **you failed**.
 
+**Label machine (REST):** [docs/github-loop.md](../../../docs/github-loop.md). This skill sets `ready` / `needs-input` / `blocked` only as that doc defines.
+
 ---
 
 ## Pipeline (labels, REST — not Projects)
@@ -56,6 +58,7 @@ create issue (bug/enhancement + priority — NO ship label required)
         ▼
 scope-loop  picks open non-epic issues NOT in:
               ready | agent-working | agent-failed | blocked | needs-input
+              | awaiting-merge | open Closes #N PR
         │     (also heals triage:ready-to-implement orphans → +ready first)
         ▼
 this skill  refines body → -scoping +ready   (unless blocked / needs-input)
@@ -72,6 +75,7 @@ pr-loop     ready → implement → land → close
 | `needs-input` | This skill | **Human must answer** (product/legal/budget decision). Parked. |
 | `blocked` | This skill / human | **External stop only** (vendor, legal hold, explicit ship gate). **Rare.** Parked. |
 | `agent-working` / `agent-failed` | pr-loop only | Ship machinery — scope-loop skips |
+| `awaiting-merge` | pr-loop (PR open, `ready` stripped) | Merge pending — scope-loop **skips** (do not re-groom) |
 | `triage:ready-to-implement` | triage / agents (metadata) | **Not a queue.** If present without `ready`, scope-loop and pr-loop **auto-promote to `ready`**. |
 
 Board columns are for humans only. **Do not** use `gh project item-edit` for queue status.
@@ -114,7 +118,9 @@ Rules for the list:
 
 - Only **ship issues** (other non-epic tickets). Do **not** list parent epics as Depends-on (epics never ship).
 - Prefer issue numbers (`#110`), not free text alone.
-- Optional prose after the number is fine.
+- Each dep is a **bullet that starts with `#N`**. Optional prose after that number is fine.
+- Do **not** put other `#N` in that section (no “open as PR #281”, no “Do not list #268”). Those used to be parsed as extra deps.
+- Cutover / “Vue stays until #279” notes belong in Non-goals, not Depends-on.
 - If there are **no** code dependencies, omit the section (or write `## Depends on` / `_None_`).
 
 ### External gates only
@@ -154,7 +160,8 @@ pr-loop --profile pageseeds-app --agent grok
 ```
 
 Skip titles matching `Epic:` / `[Epic]` — tracking epics are not ship units.
-Skip issues already labeled `ready`, `agent-working`, `agent-failed`, `blocked`, or `needs-input`.
+Skip issues already labeled `ready`, `agent-working`, `agent-failed`, `blocked`, `needs-input`, or `awaiting-merge`.
+Skip issues that already have an open PR closing them (`Closes`/`Fixes`/`Resolves #N`, or `feature/<N>-` branch) — same matching as pr-loop.
 
 ---
 
@@ -204,8 +211,10 @@ Same queue as `scope-all.sh` (default):
 ```bash
 # Open issues, then filter out:
 # - titles Epic: / [Epic]
-# - labels: ready, agent-working, agent-failed, blocked, needs-input
+# - labels: ready, agent-working, agent-failed, blocked, needs-input, awaiting-merge
+# - open PR that closes the issue (Closes/Fixes/Resolves #N or feature/N- branch)
 # (triage:ready-to-implement is NOT a skip — orphans are healed to +ready by the loop)
+# Implementation: pr-orchestrator-generic/scope_queue.py (same as scope-loop)
 gh issue list --repo $REPO --state open --limit 100 --json number,title,labels
 ```
 
@@ -283,7 +292,7 @@ Acceptance must include: fix addresses origin (`file:line`), not only the sympto
 | Outcome | Labels |
 |---------|--------|
 | Build-ready (incl. when siblings must land first) | `-scoping` `+ready`; body has `## Depends on` if ordered |
-| Needs **human** input (budget/product/legal) | `-ready` if present; `+needs-input`; **no** `ready` |
+| Needs **human** input (budget/product/legal **only** — not “I am unsure”) | `-ready` if present; `+needs-input`; **no** `ready` |
 | True external freeze only | `+blocked` + `## Ship gate (external)`; **no** `ready` |
 | Open sibling / “not on main yet” | **Still `+ready`** — never `blocked` for this |
 | Delete candidate | recommend close in comment; **no** `ready` (optional `+needs-input`) |

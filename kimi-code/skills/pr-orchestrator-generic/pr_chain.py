@@ -12,6 +12,8 @@ CLI (env: REPO_MATCH=owner/repo):
   for-issue <N>    print "<pr>\\t<url>\\t<isDraft>" for the open PR closing
                    issue N (explicit Closes #N in body/title wins over the
                    feature/<N>- branch convention); empty output when none
+  already-landed <N>  exit 0 when a closed PR closed N and no open PR remains
+  closes-from-text    stdin → space-separated issue numbers (Closes / branch)
   in-stack <PR>    exit 0 when PR has an open parent and/or child PR
   chain-up-to <PR> print PR numbers space-separated, stack bottom .. PR;
                    empty + exit 1 when PR unknown
@@ -48,6 +50,25 @@ def issue_pr_index(prs):
         for n in issues_closed_by(pr):
             idx.setdefault(n, {"pr": pr["number"], "head": pr.get("headRefName") or ""})
     return idx
+
+
+# Same matching as the old land-trailer heredoc (body + title + headRefName blob).
+_TEXT_BRANCH_RE = re.compile(r"(?i)(?:feature|fix|chore|issue)[/-](\d+)(?:[-/]|$)")
+
+
+def issues_referenced_in(text):
+    """Issue numbers referenced by Closes/Fixes/Resolves or feature/N- branch text."""
+    nums = {int(x) for x in _CLOSE_RE.findall(text or "")}
+    for m in _TEXT_BRANCH_RE.finditer(text or ""):
+        nums.add(int(m.group(1)))
+    return nums
+
+
+def is_already_landed(issue_n, open_prs, closed_prs):
+    """True when a closed PR closed the issue and no open PR still targets it."""
+    if pr_for_issue(open_prs, issue_n):
+        return False
+    return pr_for_issue(closed_prs, issue_n) is not None
 
 
 def pr_for_issue(prs, n):
@@ -140,6 +161,13 @@ def load_open_prs(repo):
     ]) or []
 
 
+def load_closed_prs(repo, limit=40):
+    return gh_json([
+        "pr", "list", "--repo", repo, "--state", "closed", "--limit", str(limit),
+        "--json", "number,url,isDraft,headRefName,baseRefName,body,title,mergedAt",
+    ]) or []
+
+
 def default_branch(repo):
     r = subprocess.run(
         ["gh", "repo", "view", repo, "--json", "defaultBranchRef",
@@ -158,6 +186,14 @@ def main():
         pr = pr_for_issue(prs, int(sys.argv[2]))
         if pr:
             print(f"{pr['number']}\t{pr['url']}\t{str(pr.get('isDraft')).lower()}")
+        return
+    if cmd == "already-landed":
+        n = int(sys.argv[2])
+        closed = load_closed_prs(repo)
+        sys.exit(0 if is_already_landed(n, prs, closed) else 1)
+    if cmd == "closes-from-text":
+        nums = sorted(issues_referenced_in(sys.stdin.read()))
+        print(" ".join(str(n) for n in nums))
         return
 
     graph = ChainGraph(prs, default_branch(repo))

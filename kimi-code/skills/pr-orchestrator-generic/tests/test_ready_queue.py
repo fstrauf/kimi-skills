@@ -66,10 +66,20 @@ class ParseDependsOnTest(unittest.TestCase):
         body = "## Depends on\n\n- #999\n- #110\n"
         self.assertEqual(self.parse(body, self_n=999), {110})
 
-    def test_after_keyword_prose(self):
-        # Documents regex-3 behavior: "after #N" prose counts as a dep.
+    def test_casual_after_hash_is_not_a_dep(self):
         body = "Cash is always missing after #275 strip.\n"
-        self.assertEqual(self.parse(body), {275})
+        self.assertEqual(self.parse(body), set())
+
+    def test_until_in_table_is_not_a_dep(self):
+        body = (
+            "## Depends on\n\n- #269 — scaffold (open as PR #281)\n\n"
+            "## Non-goals\n\nVue views stay until #279.\n"
+        )
+        self.assertEqual(self.parse(body), {269})
+
+    def test_do_not_list_epic_in_section_is_not_a_dep(self):
+        body = "## Depends on\n\n- #269\n\nDo not list #268 (epic).\n"
+        self.assertEqual(self.parse(body), {269})
 
     def test_empty_body(self):
         self.assertEqual(self.parse(""), set())
@@ -278,6 +288,86 @@ class ComputeQueueOrderTest(unittest.TestCase):
         self.assertEqual([c["n"] for c in ordered], [120])
         self.assertEqual(deferred, [])
         self.assertEqual(ordered[0]["dep_statuses"], {118: "pr_open"})
+
+    def test_pr_body_mention_does_not_skip_other_issue(self):
+        """PR that Closes #275 and mentions #272 must not park #272."""
+        issues = [
+            {
+                "number": 272,
+                "title": "SEO helper",
+                "labels": [{"name": "ready"}, {"name": "priority/P2"}],
+                "body": "## Depends on\n\n- #269\n",
+            },
+        ]
+        ready_queue.state_cache[269] = {
+            "number": 269, "state": "OPEN",
+            "labels": [{"name": "awaiting-merge"}], "title": "scaffold",
+        }
+        ready_queue._pr_index = None
+        orig = ready_queue.gh_json
+
+        def fake(args):
+            if args[:2] == ["issue", "list"]:
+                return issues
+            if args[:2] == ["pr", "list"]:
+                return [{
+                    "number": 283,
+                    "title": "blog",
+                    "headRefName": "feature/275-blog",
+                    "body": (
+                        "Closes #275\n\nBecause #272 is not on this stack "
+                        "layer, this PR adds a minimal head helper.\n"
+                    ),
+                }]
+            raise AssertionError(args)
+
+        ready_queue.gh_json = fake
+        try:
+            ordered, deferred = ready_queue.compute_queue("ready")
+        finally:
+            ready_queue.gh_json = orig
+            ready_queue._pr_index = None
+        self.assertEqual([c["n"] for c in ordered], [272])
+        self.assertEqual(deferred, [])
+
+    def test_stack_continuation_beats_unrelated_same_priority(self):
+        """Drain an open stack before starting an unrelated P2."""
+        issues = [
+            {
+                "number": 285,
+                "title": "Unrelated backend",
+                "labels": [{"name": "ready"}, {"name": "priority/P2"}],
+                "body": "## Depends on\n\n_None_\n",
+            },
+            {
+                "number": 272,
+                "title": "SEO helper",
+                "labels": [{"name": "ready"}, {"name": "priority/P2"}],
+                "body": "## Depends on\n\n- #269\n",
+            },
+        ]
+        ready_queue.state_cache[269] = {
+            "number": 269, "state": "OPEN",
+            "labels": [{"name": "awaiting-merge"}], "title": "scaffold",
+        }
+        ready_queue._pr_index = {269: {"pr": 281, "head": "feature/269-x"}}
+        orig = ready_queue.gh_json
+
+        def fake(args):
+            if args[:2] == ["issue", "list"]:
+                return issues
+            if args[:2] == ["pr", "list"]:
+                return []
+            raise AssertionError(args)
+
+        ready_queue.gh_json = fake
+        try:
+            ordered, deferred = ready_queue.compute_queue("ready")
+        finally:
+            ready_queue.gh_json = orig
+            ready_queue._pr_index = None
+        self.assertEqual([c["n"] for c in ordered], [272, 285])
+        self.assertEqual(deferred, [])
 
 
 if __name__ == "__main__":

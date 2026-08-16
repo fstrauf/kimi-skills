@@ -26,6 +26,8 @@ This is the **repo-agnostic** orchestrator. It assumes only:
 
 If a repo needs extra release gates (dev-stack setup, QA scripts, canary checks, real-user integrity), that belongs in a **repo-specific** skill or `AGENTS.md` — do **not** hardcode monorepo paths here. For call-analyzer / Days to Expiry use **`pr-orchestrator`** (dual-host thick overlay: UI gate + real-user QA).
 
+**Labels, queues, Depends-on vs park:** [docs/github-loop.md](../../../docs/github-loop.md) (repo root). Do not invent a second status machine.
+
 ## Host detection (do this first)
 
 Detect which agent host you are on, then use **only** that host's tools for the rest of the run.
@@ -84,6 +86,13 @@ kimi -p "/skill:pr-orchestrator-generic <issue-number>" --output-format stream-j
 grok -p "/pr-orchestrator-generic <issue-number>" --always-approve
 ```
 
+**Walk-away (scope then ship):**
+
+```bash
+ship-loop --profile coffee --agent grok
+ship-loop --profile coffee --ask          # print parked leftovers
+```
+
 **Unattended Ready-column loop** (`pr-loop` on PATH, or `loop-ready-issues.sh` next to this skill):
 
 Board + repo config comes from a **profile** (`profiles/<name>.env`). `--profile` is required.
@@ -92,7 +101,9 @@ Installed wrappers (via `~/.local/bin`, already on PATH):
 
 | Command | Points at |
 |---------|-----------|
+| `ship-loop` | `ship-loop.sh` (scope then ship) |
 | `pr-loop` | `loop-ready-issues.sh` |
+| `scope-loop` | `scope-all.sh` |
 | `pr-loop-setup` | `setup-profile.sh` |
 
 ```bash
@@ -118,7 +129,7 @@ gh issue edit N --add-label ready          # you enqueue
 pr-loop --profile txApp --agent grok       # agent ships
 ```
 
-Labels: `ready` → `agent-working` → close issue on land; fail → `agent-failed`. Project board is optional for humans only (`ORCH_BOARD=0` by default — no GraphQL status writes).
+Labels: see [docs/github-loop.md](../../../docs/github-loop.md). `ready` → `agent-working` → land/close · `awaiting-merge` · `needs-input` · `agent-failed`.
 
 **Auto-merge (serial land):** when `ORCH_AUTO_MERGE=1` (default), the **loop worker** lands the PR after orchestrator success, then pulls `main`.
 
@@ -157,8 +168,9 @@ These override any other instruction in this skill or any invoked skill:
 
 1. Only `ready` (skips `blocked` / `agent-*` / Epics).
 2. Parses `## Depends on` / `Depends on: #N` from the issue body.
-3. **Topological sort** among ready issues (priority, then issue number as tie-break).
-4. Defers a ready issue if an open dependency is not closed and not also `ready`.
+3. **Topological sort** among ready issues (priority, then **continue an unmerged stack** before unrelated same-P work, then issue number).
+4. Defers a ready issue if an open dependency is not closed, not `ready`, and not `awaiting-merge` / open-PR (those stack through).
+5. “Does this issue already have a PR?” uses `pr_chain` (`Closes`/`Fixes`/`Resolves #N` or `feature/<N>-`). Never GitHub search `Closes #N in:body` (token-AND false positives).
 
 Scope agents must put **code dependencies in the body**, not in the `blocked` label. See `gh-scope-issue` → *Dependencies vs park labels*.
 
@@ -318,7 +330,12 @@ Optional host-specific extras (do not require them):
 1. Read the issue title and body carefully.
 2. Read `AGENTS.md` / `Agents.md` and project docs it references.
 3. Search the codebase for relevant files (host search tools).
-4. If the body is ambiguous, make a reasonable interpretation from `AGENTS.md` and proceed. If you cannot, abort with the ambiguity listed.
+4. If the body is ambiguous, make a reasonable interpretation from `AGENTS.md` and proceed. Park `needs-input` **only** for a product / legal / budget decision a human must make:
+   ```bash
+   gh issue edit <N> --add-label needs-input --remove-label ready
+   gh issue comment <N> --body "needs-input: <the question>"
+   ```
+   Then **exit 0**. Do not use `blocked`. Do not `agent-failed`. The supervisor will pick the next ticket.
 5. Mark "Understand issue" done.
 
 ### Phase 2 — Implement
@@ -587,7 +604,7 @@ This PR is ready for review.
 - Do not force-push without lease; prefer no force-push at all. `gh stack push` is fine (lease internally).
 - Do not run destructive database or file commands.
 - Never `gh pr merge` or squash-push-land a stacked PR — use `gh stack merge` or hand off to a human.
-- If the issue is ambiguous and you cannot form a reasonable interpretation, abort clearly.
+- If the issue needs a human decision (product/legal/budget only), `+needs-input` and exit 0. Do not abort the fleet.
 - If the review loop or test gate gets stuck, stop and report current state rather than looping forever.
 - Respect project-specific test commands from `AGENTS.md`.
 - Prefer worktree-isolated implementers when the host supports them so the main workspace stays clean.
@@ -611,8 +628,10 @@ At the end of a successful run, report:
 |-------|------|
 | `pr-orchestrator` | **Call-analyzer thick overlay** (dual-host): same loop + `pnpm test:all`/dev stack + UI gate + real-user QA. Use only in call-analyzer; profile `ORCH_SKILL=/pr-orchestrator`. |
 | `thermo-nuclear-code-quality-review` | Review baseline loaded via read-file into reviewer subagents |
-| `pr-loop` (PATH) / `loop-ready-issues.sh` | Unattended Ready-column runner; **`--profile NAME`** + `--agent kimi\|grok`; stack-aware land via `ORCH_STACK` + `loop-common.sh` |
-| `pr-loop-setup` (PATH) / `setup-profile.sh` | Create/refresh `profiles/<name>.env` (repo + board field IDs) |
+| `ship-loop` (PATH) | Walk-away: scope then ship; `--ask` prints leftovers |
+| `pr-loop` (PATH) / `loop-ready-issues.sh` | Unattended Ready-column runner; **`--profile NAME`** + `--agent kimi\|grok` |
+| `pr-loop-setup` (PATH) / `setup-profile.sh` | Create/refresh `profiles/<name>.env` |
 | `profiles/*.env` | Per-product board/repo config **shared with scope-loop** (txApp, pageseeds-app, …) |
 | `scope-loop` (PATH) / `scope-all.sh` | Unattended Scoping-column runner; same `--profile NAME` as pr-loop |
 | `pr-babysit` (Grok) | Post-ready CI/review babysitter; already understands Graphite + `gh stack` |
+| `docs/github-loop.md` | **SSOT** for REST labels, handover, supervisor rules |

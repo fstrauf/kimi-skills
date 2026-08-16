@@ -62,23 +62,14 @@ Create it with:
   export LOOP_PROFILE="$name"
   export LOOP_PROFILE_PATH="$path"
 
-  # Required keys:
-  #   Always: REPO, REPO_DIR (REST queue for scope-loop + pr-loop)
-  #   When ORCH_BOARD=1: PROJECT_NUMBER + board field/option IDs
-  # REST-only profiles (ORCH_BOARD=0, default) need no project board.
+  # Required keys: REPO, REPO_DIR. Queue is REST labels only.
+  # Project board IDs in older profiles are ignored (no GraphQL writes).
   local req missing=()
   for req in REPO REPO_DIR; do
     if [ -z "${!req:-}" ]; then
       missing+=("$req")
     fi
   done
-  if [ "${ORCH_BOARD:-0}" = "1" ]; then
-    for req in PROJECT_NUMBER PROJECT_ID STATUS_FIELD_ID OPT_READY OPT_IN_PROGRESS OPT_IN_REVIEW; do
-      if [ -z "${!req:-}" ]; then
-        missing+=("$req")
-      fi
-    done
-  fi
   if [ ${#missing[@]} -gt 0 ]; then
     echo "Profile $path missing required keys: ${missing[*]}" >&2
     return 1
@@ -202,10 +193,15 @@ orch_cmd_display() { # <issue-number>
   echo "$ORCH_CLI -p \"$ORCH_SKILL $issue\"${ORCH_CLI_ARGS:+ $ORCH_CLI_ARGS}"
 }
 
+# Porcelain minus loop worktrees (those are isolated checkouts, not dirt).
+_status_porcelain() {
+  git -C "$REPO_DIR" status --porcelain | grep -vE '(^|\s)\.worktrees/' || true
+}
+
 # True if porcelain status has any modified/staged tracked files (not pure ??).
 _has_tracked_dirt() {
   # First column or second column letters other than ? and space, or renames etc.
-  git -C "$REPO_DIR" status --porcelain | grep -Eqv '^\?\?'
+  _status_porcelain | grep -Eqv '^\?\?'
 }
 
 # Discard known generated-file noise that tooling rewrites mid-loop without
@@ -256,7 +252,7 @@ auto_clean_untracked_debris() {
   local protected_regex='(^|/)\.env($|\.|/)|(^|/)\.venv($|/)|^(backups|tmp|output|\.worktrees)/'
   local victims=()
   auto_discard_generated_noise
-  dirty=$(git -C "$REPO_DIR" status --porcelain)
+  dirty=$(_status_porcelain)
   [ -n "$dirty" ] || return 0
 
   # Always refuse to touch modified/staged tracked files (beyond generated noise).
@@ -278,7 +274,7 @@ auto_clean_untracked_debris() {
     log "Auto-cleaned ignored untracked files (git clean -fdX, protected paths kept)"
   fi
 
-  dirty=$(git -C "$REPO_DIR" status --porcelain)
+  dirty=$(_status_porcelain)
   [ -n "$dirty" ] || return 0
 
   if [ "${ORCH_AUTO_CLEAN:-1}" != "1" ]; then
@@ -303,7 +299,7 @@ $dirty"
 require_clean_tree() {
   local dirty
   auto_clean_untracked_debris
-  dirty=$(git -C "$REPO_DIR" status --porcelain)
+  dirty=$(_status_porcelain)
   if [ -n "$dirty" ]; then
     log "Working tree in $REPO_DIR is dirty — refusing to run unattended.
 $dirty
@@ -503,6 +499,10 @@ _pr_chain_py() {
   echo "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr_chain.py"
 }
 
+_labels_py() {
+  echo "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.py"
+}
+
 # True if open PR $1 is part of a multi-PR base/head chain in $REPO
 # (parent and/or child open PR). Standalone PRs targeting trunk return false.
 pr_is_in_open_stack() {
@@ -686,16 +686,9 @@ merge_pr_via_push() {
   closes_line=$(
     gh pr view "$pr" --repo "$REPO" --json body,title,headRefName -q \
       '[.body // "", .title // "", .headRefName // ""] | @tsv' 2>/dev/null \
-    | python3 -c '
-import re,sys
-text=sys.stdin.read()
-nums=sorted(set(int(x) for x in re.findall(r"(?i)(?:closes|fixes|resolves)\s+#(\d+)", text)))
-if not nums:
-    for m in re.finditer(r"(?i)(?:feature|fix|chore|issue)[/-](\d+)(?:[-/]|$)", text):
-        nums.append(int(m.group(1)))
-    nums=sorted(set(nums))
-print("\n".join(f"Closes #{n}" for n in nums))
-' 2>/dev/null || true
+    | REPO_MATCH="$REPO" python3 "$(_pr_chain_py)" closes-from-text 2>/dev/null \
+    | python3 -c 'import sys; print("\n".join(f"Closes #{n}" for n in sys.stdin.read().split() if n.isdigit()))' \
+    || true
   )
   default_branch=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
   default_branch=${default_branch:-main}
@@ -778,14 +771,7 @@ close_issues_linked_to_pr() {
   nums=$(
     gh pr view "$pr" --repo "$REPO" --json body,title,headRefName -q \
       '[.body // "", .title // "", .headRefName // ""] | @tsv' 2>/dev/null \
-    | python3 -c '
-import re,sys
-text=sys.stdin.read()
-nums=set(int(x) for x in re.findall(r"(?i)(?:closes|fixes|resolves)\s+#(\d+)", text))
-for m in re.finditer(r"(?i)(?:feature|fix|chore|issue)[/-](\d+)(?:[-/]|$)", text):
-    nums.add(int(m.group(1)))
-print(" ".join(str(n) for n in sorted(nums)))
-' 2>/dev/null || true
+    | REPO_MATCH="$REPO" python3 "$(_pr_chain_py)" closes-from-text 2>/dev/null || true
   )
   local n
   for n in $nums; do
@@ -803,35 +789,8 @@ print(" ".join(str(n) for n in sorted(nums)))
 # If an open PR still targets the issue, always returns false (not landed yet).
 issue_already_landed() {
   local issue=$1
-  # Open PR for this issue → still needs land
-  if [ -n "$(find_open_pr_for_issue "$issue" 2>/dev/null || true)" ]; then
-    return 1
-  fi
-  # Client-side filter of recent closed PRs (merged or push-land closed)
-  local closed_pr
-  closed_pr=$(
-    REPO_MATCH="$REPO" ISSUE_N="$issue" python3 - <<'PY'
-import json, os, re, subprocess
-repo, n = os.environ["REPO_MATCH"], os.environ["ISSUE_N"]
-raw = subprocess.check_output(
-    ["gh", "pr", "list", "--repo", repo, "--state", "closed", "--limit", "40",
-     "--json", "number,title,headRefName,mergedAt,body"],
-    text=True,
-)
-pat_close = re.compile(rf"(?i)(?:closes|fixes|resolves)\s+#0*{re.escape(n)}\b")
-pat_branch = re.compile(rf"(?i)(?:^|/)(?:feature|fix|chore|issue)[/-]0*{re.escape(n)}(?:[-/]|$)")
-for pr in json.loads(raw):
-    head = pr.get("headRefName") or ""
-    title = pr.get("title") or ""
-    body = pr.get("body") or ""
-    blob = f"{body}\n{title}\n{head}"
-    # Require explicit close keyword or feature/<n>- branch — not bare "#n" in title
-    if pat_close.search(blob) or pat_branch.search(head):
-        print(pr["number"])
-        raise SystemExit
-PY
-  )
-  [ -n "$closed_pr" ]
+  [ -n "${REPO:-}" ] || return 1
+  REPO_MATCH="$REPO" python3 "$(_pr_chain_py)" already-landed "$issue" >/dev/null 2>&1
 }
 
 # Merge PR $1 (number). Waits until merged when checks require --auto.
@@ -1035,7 +994,9 @@ is_tracking_only_issue() {
 #   agent-working  — claimed by a live worker
 #   agent-failed   — last run failed; remove + re-add ready to retry
 #   awaiting-merge — PR open, merge pending (human merge or gh stack merge);
-#                    dependents treat it as satisfied and stack onto its branch
+#                    dependents treat it as satisfied and stack onto its branch.
+#                    scope-loop skips this label (and any open Closes #N PR)
+#                    so parked tickets are not re-groomed.
 #   triage:ready-to-implement — metadata from triage only; NOT a ship queue.
 #                               Must never sit without ready/needs-input/blocked.
 #   blocked        — external/human freeze only (NOT "depends on open #N")
@@ -1075,46 +1036,9 @@ promote_triage_ready_orphans() {
     REPO_MATCH="$REPO" \
     READY_LABEL="${ORCH_READY_LABEL:-ready}" \
     TRIAGE_LABEL="${ORCH_TRIAGE_READY_LABEL:-triage:ready-to-implement}" \
-    python3 - <<'PY' 2>/dev/null || true
-import json, os, re, subprocess, sys
-
-repo = os.environ["REPO_MATCH"]
-ready = os.environ["READY_LABEL"]
-triage = os.environ["TRIAGE_LABEL"]
-park = {ready, "agent-working", "agent-failed", "blocked", "needs-input"}
-
-try:
-    issues = json.loads(subprocess.check_output(
-        ["gh", "issue", "list", "--repo", repo, "--state", "open",
-         "--label", triage, "--limit", "100",
-         "--json", "number,title,labels"],
-        text=True,
-    ))
-except Exception:
-    print("")
-    sys.exit(0)
-
-out = []
-for it in issues:
-    title = it.get("title") or ""
-    if re.search(r"^\s*(epic\b|\[epic\])", title, re.I):
-        continue
-    names = {l.get("name") for l in (it.get("labels") or []) if l.get("name")}
-    if triage not in names:
-        continue
-    if names & park:
-        continue
-    n = str(it["number"])
-    # +ready; leave triage label for audit trail
-    subprocess.run(
-        ["gh", "issue", "edit", n, "--repo", repo, "--add-label", ready],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    out.append(n)
-
-print(" ".join(out))
-PY
+    python3 "$(_labels_py)" heal-triage 2>/dev/null || true
   )
+  promoted=$(echo "$promoted" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
 
   if [ -n "${promoted// /}" ]; then
     case "$mode" in
@@ -1215,8 +1139,7 @@ release_issue_awaiting_merge() {
 }
 
 # REST-only recovery for issues stuck on `agent-working` after a hard kill
-# (crash / kill -9 / reboot). The board-based recover_interrupted only works
-# for ORCH_BOARD=1 profiles; this sweep needs no GraphQL. Runs at loop start
+# (crash / kill -9 / reboot). REST-only: no project board. Runs at loop start
 # (the per-profile lock guarantees no live worker for this profile).
 #   open PR exists → awaiting-merge (merge pending, dependents may stack)
 #   no PR          → back to ready (re-pick)
@@ -1289,71 +1212,8 @@ heal_false_dependency_blocks() {
   promoted=$(
     REPO_MATCH="$REPO" \
     READY_LABEL="${ORCH_READY_LABEL:-ready}" \
-    python3 - <<'PY' 2>/dev/null || true
-import json, os, re, subprocess, sys
-
-repo = os.environ["REPO_MATCH"]
-ready = os.environ["READY_LABEL"]
-
-try:
-    issues = json.loads(subprocess.check_output(
-        ["gh", "issue", "list", "--repo", repo, "--state", "open",
-         "--label", "blocked", "--limit", "100",
-         "--json", "number,title,labels,body"],
-        text=True,
-    ))
-except Exception:
-    print("")
-    sys.exit(0)
-
-promoted = []
-for it in issues:
-    n = it["number"]
-    title = (it.get("title") or "")
-    if re.match(r"(?i)^\s*(epic\b|\[epic\])", title):
-        continue
-    labels = {l["name"] for l in (it.get("labels") or [])}
-    if "needs-input" in labels:
-        continue
-    if ready in labels or "agent-working" in labels or "agent-failed" in labels:
-        continue
-    body = it.get("body") or ""
-
-    if re.search(r"(?im)^##\s*Ship gate\s*\(external\)", body):
-        continue
-    external = bool(re.search(
-        r"(?i)\b(places\s+budget|api\s+budget|budget\s+approved|legal\s+hold|"
-        r"vendor\s+outage|human\s+approval|owner\s+decision)\b",
-        body,
-    ))
-    has_dep_lang = bool(re.search(
-        r"(?i)(##\s*Depends on\b|depends on\b|do not start until\s*#\d|"
-        r"blocked on #\d|parent epic:\s*#\d)",
-        body,
-    ))
-    if external:
-        continue
-    if not has_dep_lang:
-        continue
-
-    subprocess.run(
-        ["gh", "issue", "edit", str(n), "--repo", repo,
-         "--remove-label", "blocked", "--add-label", ready],
-        capture_output=True, text=True,
-    )
-    subprocess.run(
-        ["gh", "issue", "comment", str(n), "--repo", repo, "--body",
-         "Auto-heal: removed `blocked` (code dependency is not a park reason). "
-         "Ship order lives in `## Depends on`; pr-loop topo-sorts the `ready` queue. "
-         "See gh-scope-issue skill — Dependencies vs park labels."],
-        capture_output=True, text=True,
-    )
-    promoted.append(str(n))
-
-print(" ".join(promoted))
-PY
+    python3 "$(_labels_py)" heal-dep-blocks 2>/dev/null || true
   )
-
   promoted=$(echo "$promoted" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
   if [ -z "$promoted" ]; then
     case "$mode" in
@@ -1370,149 +1230,20 @@ PY
   esac
 }
 
+# Print parked / waiting issues. Empty pickable + leftovers ≠ Done.
+report_leftovers() {
+  [ -n "${REPO:-}" ] || return 0
+  REPO_MATCH="$REPO" READY_LABEL="${ORCH_READY_LABEL:-ready}" \
+    python3 "$(_labels_py)" leftovers 2>/dev/null || true
+}
+
 # Back-compat name used by supervisor
 board_candidates() {
   ready_label_candidates "$@"
 }
 
-# --- Board updates (GitHub Projects v2 = GraphQL only) -----------------------
-# There is no REST API for Projects v2 item status. Every `gh project item-list`
-# / `item-edit` burns GraphQL quota (5000/hour). We therefore:
-#   - cache item-list for BOARD_CACHE_TTL seconds (default 180)
-#   - prefer the item-id the supervisor already resolved (hint)
-#   - allow ORCH_BOARD=0 to skip board entirely (issues still close via REST)
-#
-# REST (gh issue close/edit) is separate and rarely rate-limited.
-
-# Board is for *humans* to look at. Default: agents do NOT write project status
-# (Projects v2 = GraphQL, burns quota). Ship path uses REST only: issues, PRs, git.
-# ORCH_BOARD=1 re-enables Ready/In progress/Done writes if you want full automation.
+# Board columns are human-only. REST labels are the queue (see docs/github-loop.md).
 : "${ORCH_BOARD:=0}"
-: "${BOARD_CACHE_TTL:=180}"    # seconds to reuse item-list JSON (reads only when ORCH_BOARD=1 or pick)
-
-board_cache_path() {
-  # Avoid $(id -u) — some constrained shells lack `id` on PATH.
-  echo "${BOARD_CACHE_FILE:-${TMPDIR:-/tmp}/pr-loop-board-${PROJECT_NUMBER:-x}-${USER:-user}.json}"
-}
-
-# Refresh cached project item-list if missing/stale. Returns 0 if cache usable.
-refresh_board_cache() {
-  local force=${1:-0}
-  local path age
-  path=$(board_cache_path)
-  if [ "$force" != "1" ] && [ -f "$path" ]; then
-    age=$(( $(date +%s) - $(stat -f %m "$path" 2>/dev/null || stat -c %Y "$path" 2>/dev/null || echo 0) ))
-    if [ "$age" -ge 0 ] && [ "$age" -lt "${BOARD_CACHE_TTL:-180}" ]; then
-      return 0
-    fi
-  fi
-  local err
-  err="${TMPDIR:-/tmp}/pr-loop-board-err-$$.txt"
-  if ! gh project item-list "$PROJECT_NUMBER" --owner "${PROJECT_OWNER:-@me}" \
-        --format json --limit 500 >"$path" 2>"$err"; then
-    if grep -qi 'rate limit' "$err" 2>/dev/null; then
-      log "GraphQL rate limit on project item-list (Projects v2). Cache not refreshed.
-  REST is fine; board ops need GraphQL. Wait for reset or set ORCH_BOARD=0 to skip board updates.
-  $(head -c 200 "$err" 2>/dev/null)"
-    else
-      log "project item-list failed: $(head -c 200 "$err" 2>/dev/null)"
-    fi
-    rm -f "$err"
-    # Keep stale cache if present
-    [ -f "$path" ] && return 0
-    return 1
-  fi
-  rm -f "$err"
-  return 0
-}
-
-set_status() { # <item-id> <option-id> <label>
-  local item_id=$1 option_id=$2 label=$3
-  local err
-  if [ "${ORCH_BOARD:-1}" != "1" ]; then
-    log "ORCH_BOARD=0 — skip board status '$label'"
-    return 0
-  fi
-  if [ -z "$item_id" ] || [ -z "$option_id" ]; then
-    log "WARNING: set_status missing item_id or option_id for '$label' — skipping"
-    return 1
-  fi
-  err="${TMPDIR:-/tmp}/pr-loop-edit-err-$$.txt"
-  if gh project item-edit --project-id "$PROJECT_ID" --id "$item_id" \
-      --field-id "$STATUS_FIELD_ID" --single-select-option-id "$option_id" >/dev/null 2>"$err"; then
-    rm -f "$err"
-    log "Board #$PROJECT_NUMBER status -> $label (item ${item_id:0:24}…)"
-    return 0
-  fi
-  if grep -qi 'rate limit' "$err" 2>/dev/null; then
-    log "WARNING: GraphQL rate limit on item-edit (status '$label') — board not updated. Issue close via REST still works."
-  else
-    log "WARNING: failed to set board status to $label: $(head -c 180 "$err" 2>/dev/null)"
-  fi
-  rm -f "$err"
-  return 1
-}
-
-# Look up project item id from **cached** board list (refreshes at most every TTL).
-# Prints the item id or empty.
-board_item_id_for_issue() {
-  local issue=$1
-  [ -n "$issue" ] && [ -n "${PROJECT_NUMBER:-}" ] && [ -n "${REPO:-}" ] || return 1
-  if [ "${ORCH_BOARD:-1}" != "1" ]; then
-    return 1
-  fi
-  refresh_board_cache || return 1
-  local path
-  path=$(board_cache_path)
-  [ -f "$path" ] || return 1
-  REPO_MATCH="$REPO" ISSUE_N="$issue" python3 - "$path" <<'PY'
-import json, os, sys
-path = sys.argv[1]
-repo = os.environ["REPO_MATCH"]
-slug = repo.split("/")[-1]
-want = int(os.environ["ISSUE_N"])
-with open(path) as f:
-    items = json.load(f).get("items") or []
-for it in items:
-    c = it.get("content") or {}
-    n = c.get("number")
-    if n is None or int(n) != want:
-        continue
-    r = " ".join([
-        str(it.get("repository") or ""),
-        str(c.get("repository") or ""),
-        str(c.get("url") or ""),
-    ])
-    if slug not in r and repo not in r:
-        continue
-    print(it["id"])
-    raise SystemExit(0)
-raise SystemExit(1)
-PY
-}
-
-# Set status for an issue.
-# Usage: set_issue_status <issue> <option-id> <label> [item-id-hint]
-# Prefer hint (from supervisor pick) to avoid an extra GraphQL list.
-set_issue_status() {
-  local issue=$1 option_id=$2 label=$3 hint=${4:-}
-  local item_id
-
-  if [ "${ORCH_BOARD:-1}" != "1" ]; then
-    log "ORCH_BOARD=0 — skip board '$label' for #$issue (issue labels/close still via REST)"
-    return 0
-  fi
-
-  item_id=$hint
-  if [ -z "$item_id" ]; then
-    item_id=$(board_item_id_for_issue "$issue" 2>/dev/null) || item_id=""
-  fi
-  if [ -z "$item_id" ]; then
-    log "WARNING: no project item id for #$issue on board #$PROJECT_NUMBER — cannot set '$label' (rate limit or not on board)"
-    return 1
-  fi
-  set_status "$item_id" "$option_id" "$label"
-}
 
 mention_user() {
   if [ -z "$MENTION_USER" ]; then
@@ -1549,167 +1280,68 @@ remove_label() { # <issue> <name> — silent if absent
   gh issue edit "$1" --repo "$REPO" --remove-label "$2" >/dev/null 2>&1 || true
 }
 
-# --- Recovery of interrupted runs ------------------------------------------------
-#
-# The worker labels every issue it starts with `agent-working` and removes the
-# label on every exit path (success / failure / graceful interrupt). An issue
-# left "In progress" WITH the label therefore means: the previous loop died
-# hard (kill -9, crash, reboot) mid-run. Issues without the label are owned by
-# a human and are never touched.
-
-# Print "<issue> <item-id> yes|no" (last field = open PR exists) for each
-# agent-owned In-progress item.
-recover_candidates() {
-  local items_file
-  items_file=$(mktemp -t pr-loop-items) || return 1
-  if ! gh project item-list "$PROJECT_NUMBER" --owner "$PROJECT_OWNER" \
-        --format json --limit 500 > "$items_file"; then
-    rm -f "$items_file"
-    return 1
-  fi
-  python3 - "$REPO" "$items_file" <<'EOF'
-import json, subprocess, sys
-
-repo, items_path = sys.argv[1], sys.argv[2]
-with open(items_path) as f:
-    items = json.load(f)["items"]
-
-in_progress = {}
-for it in items:
-    content = it.get("content") or {}
-    if it.get("status") == "In progress" and content.get("type") == "Issue":
-        if repo.endswith((content.get("repository") or "").split("/")[-1]):
-            in_progress[content["number"]] = it["id"]
-
-if not in_progress:
-    sys.exit(0)
-
-issues = json.loads(subprocess.run(
-    ["gh", "issue", "list", "--repo", repo, "--state", "open",
-     "--json", "number,labels", "--limit", "200"],
-    capture_output=True, check=True).stdout)
-
-for issue in issues:
-    n = issue["number"]
-    if n not in in_progress:
-        continue
-    labels = {l["name"] for l in issue["labels"]}
-    if "agent-working" not in labels:
-        continue
-    prs = subprocess.run(
-        ["gh", "pr", "list", "--repo", repo, "--state", "open",
-         "--search", f"Closes #{n} in:body", "--json", "number"],
-        capture_output=True, check=True).stdout
-    print(f"{n} {in_progress[n]} {'yes' if json.loads(prs) else 'no'}")
-EOF
-  local rc=$?
-  rm -f "$items_file"
-  return $rc
+# Ambiguity / owner question: park, do not treat as mechanical failure.
+release_issue_parked_needs_input() {
+  local issue=$1
+  remove_label "$issue" "agent-working"
+  remove_label "$issue" "${ORCH_READY_LABEL:-ready}"
+  remove_label "$issue" "agent-failed"
+  ensure_label "needs-input" "D93F0B" "Owner decision; not ready for pr-loop"
+  add_label "$issue" "needs-input"
 }
 
-# Sweep In progress cards that are NOT owned by a live agent (no agent-working).
-# These get stranded when: interrupt handler fails, old wrong-board status, or
-# orchestrator opened a PR then the worker died before land/Done.
-# Safe: never touches issues still labeled agent-working (active worker).
-sweep_stranded_in_progress() {
-  local items_file n item_id title labels open_pr
-  items_file=$(mktemp -t pr-loop-items) || return 0
-  if ! gh project item-list "$PROJECT_NUMBER" --owner "${PROJECT_OWNER:-@me}" \
-        --format json --limit 500 >"$items_file" 2>/dev/null; then
-    rm -f "$items_file"
-    return 0
-  fi
-  while IFS=$'\t' read -r n item_id title; do
-    [ -n "$n" ] || continue
-    labels=$(gh issue view "$n" --repo "$REPO" --json labels -q '[.labels[].name]|join(" ")' 2>/dev/null || echo "")
-    if echo " $labels " | grep -q ' agent-working '; then
-      log "Sweep: #$n still agent-working — leave In progress"
-      continue
-    fi
-    if is_tracking_only_issue "$n" 2>/dev/null; then
-      log "Sweep: #$n tracking epic stranded In progress → Backlog"
-      if [ -n "${OPT_BACKLOG:-}" ]; then
-        set_issue_status "$n" "$OPT_BACKLOG" "Backlog"
-      else
-        set_issue_status "$n" "$OPT_IN_REVIEW" "In review"
-      fi
-      continue
-    fi
-    if issue_already_landed "$n" 2>/dev/null; then
-      log "Sweep: #$n already on main → Done"
-      [ -n "${OPT_DONE:-}" ] && set_issue_status "$n" "$OPT_DONE" "Done" \
-        || set_issue_status "$n" "$OPT_IN_REVIEW" "In review"
-      istate=$(gh issue view "$n" --repo "$REPO" --json state -q .state 2>/dev/null || echo "")
-      if [ "$istate" = "OPEN" ]; then
-        gh issue close "$n" --repo "$REPO" --comment "Closed by board sweep: work already on default branch." >/dev/null 2>&1 || true
-      fi
-      continue
-    fi
-    open_pr=$(find_open_pr_for_issue "$n" | cut -f1 || true)
-    if [ -n "$open_pr" ]; then
-      log "Sweep: #$n has open PR #$open_pr → In review"
-      set_issue_status "$n" "$OPT_IN_REVIEW" "In review"
-      continue
-    fi
-    log "Sweep: #$n In progress with no PR and not landed → Ready"
-    set_issue_status "$n" "$OPT_READY" "Ready"
-  done < <(
-    REPO_MATCH="$REPO" python3 - "$items_file" <<'PY'
-import json, os, sys
-repo = os.environ["REPO_MATCH"]
-slug = repo.split("/")[-1]
-with open(sys.argv[1]) as f:
-    items = json.load(f).get("items") or []
-for it in items:
-    if it.get("status") != "In progress":
-        continue
-    c = it.get("content") or {}
-    n = c.get("number")
-    if n is None:
-        continue
-    r = " ".join([str(it.get("repository") or ""), str(c.get("repository") or ""), str(c.get("url") or "")])
-    if slug not in r and repo not in r:
-        continue
-    title = (c.get("title") or "").replace("\t", " ")
-    print(f"{n}\t{it['id']}\t{title}")
-PY
-  )
-  rm -f "$items_file"
+issue_has_label() { # <issue> <name>
+  local names
+  names=$(gh issue view "$1" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")' 2>/dev/null || echo "")
+  printf '%s' "$names" | grep -Eq "(^|,)${2}(,|$)"
 }
 
-# Adopt agent-owned In-progress items on the **profile** board:
-#   already on main -> Done
-#   open PR -> In review
-#   else -> Ready
-recover_interrupted() {
-  local recovered n item_id has_pr
-  if ! recovered=$(recover_candidates); then
-    log "WARNING: recovery sweep failed (gh error) — continuing without it"
+# --- Worktrees ----------------------------------------------------------------
+# One worktree per issue under $REPO_DIR/.worktrees/ so a dirty main checkout
+# cannot abort the fleet. Main stays on the default branch.
+
+issue_worktree_path() {
+  echo "${REPO_DIR}/.worktrees/issue-${1}"
+}
+
+# Print worktree path on success. Leaves main checkout untouched.
+ensure_issue_worktree() {
+  local issue=$1
+  local wt base branch
+  [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR/.git" ] || return 1
+  wt=$(issue_worktree_path "$issue")
+  base="${ORCH_BASE_BRANCH:-$(default_branch_name)}"
+  branch="feature/${issue}-loop"
+
+  mkdir -p "${REPO_DIR}/.worktrees"
+
+  if [ -d "$wt" ]; then
+    printf '%s\n' "$wt"
     return 0
   fi
-  [ -n "$recovered" ] || return 0
-  while read -r n item_id has_pr; do
-    [ -n "$n" ] || continue
-    remove_label "$n" "agent-working"
-    if issue_already_landed "$n"; then
-      log "Recovery: issue #$n already landed — Done"
-      if [ -n "${OPT_DONE:-}" ]; then
-        set_issue_status "$n" "$OPT_DONE" "Done"
-      else
-        set_issue_status "$n" "$OPT_IN_REVIEW" "In review"
-      fi
-      istate=$(gh issue view "$n" --repo "$REPO" --json state -q .state 2>/dev/null || echo "")
-      if [ "$istate" = "OPEN" ]; then
-        gh issue close "$n" --repo "$REPO" --comment "Closed on recovery: work already on default branch." >/dev/null 2>&1 || true
-      fi
-    elif [ "$has_pr" = "yes" ]; then
-      log "Recovery: issue #$n has an open PR — In review"
-      set_issue_status "$n" "$OPT_IN_REVIEW" "In review"
-      notify "$n" "recovered after interrupt: PR exists → In review."
-    else
-      log "Recovery: issue #$n interrupted mid-run — Ready"
-      set_issue_status "$n" "$OPT_READY" "Ready"
-      notify "$n" "recovered after interrupt with no PR — Ready for re-run."
-    fi
-  done <<< "$recovered"
+
+  git -C "$REPO_DIR" fetch origin "$base" >/dev/null 2>&1 \
+    || git -C "$REPO_DIR" fetch origin >/dev/null 2>&1 \
+    || true
+
+  if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$REPO_DIR" worktree add "$wt" "$branch" >/dev/null 2>&1 || return 1
+  elif git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    git -C "$REPO_DIR" worktree add "$wt" -b "$branch" "origin/$branch" >/dev/null 2>&1 || return 1
+  else
+    git -C "$REPO_DIR" worktree add "$wt" -b "$branch" "origin/${base}" >/dev/null 2>&1 \
+      || git -C "$REPO_DIR" worktree add "$wt" -b "$branch" "$base" >/dev/null 2>&1 \
+      || return 1
+  fi
+  printf '%s\n' "$wt"
+}
+
+remove_issue_worktree() {
+  local issue=$1
+  local wt
+  [ -n "${REPO_DIR:-}" ] || return 0
+  wt=$(issue_worktree_path "$issue")
+  [ -e "$wt" ] || return 0
+  git -C "$REPO_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  git -C "$REPO_DIR" worktree prune >/dev/null 2>&1 || true
 }

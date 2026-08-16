@@ -8,13 +8,14 @@
 #   gh issue edit N --add-label ready     # enqueue
 #   gh issue close N                      # or land path does this
 #
-# Agent label machine (REST only — no Projects/GraphQL):
+# Agent label machine (REST only):
 #   ready → agent-working → (land) close issue
 #                        → awaiting-merge (PR open/stacked; dependents chain on)
-#                        → agent-failed (no ready; re-add ready to retry)
+#                        → needs-input (owner question — not a fail)
+#                        → agent-failed (mechanical fail; re-add ready to retry)
 #                        → ready again on interrupt
 #
-# Exit: 0 success/skip · 1 fail · 42 preflight · 130 interrupt
+# Exit: 0 success/skip/park · 1 fail · 42 preflight (worktree + main both unusable) · 130 interrupt
 #
 
 set -uo pipefail
@@ -31,12 +32,23 @@ if [ -z "${ORCH_CLI:-}" ]; then
 fi
 
 AGENT_PID=""
+WORKER_CWD="$REPO_DIR"
+USED_WORKTREE=0
+
+cleanup_issue_workspace() {
+  if [ "$USED_WORKTREE" = 1 ]; then
+    remove_issue_worktree "$ISSUE"
+    USED_WORKTREE=0
+  fi
+  return_to_main || log "WARNING: main checkout left as-is (tracked edits untouched)"
+}
 
 on_interrupt() {
   trap '' INT TERM
   log "Interrupted during issue #$ISSUE — restoring ready label"
   [ -n "$AGENT_PID" ] && kill "$AGENT_PID" 2>/dev/null
   release_issue_interrupted "$ISSUE"
+  cleanup_issue_workspace
   notify "$ISSUE" "orchestrator interrupted. Label \`ready\` restored — re-run the loop to pick it up."
   exit 130
 }
@@ -55,13 +67,23 @@ finish_landed() { # <issue> <pr-url> <close-comment> <notify-message>
       || log "WARNING: could not close issue #$issue"
   fi
   notify "$issue" "$msg${url:+ $url}"
-  return_to_main || log "WARNING: could not return to clean main after land"
+  cleanup_issue_workspace
   exit 0
 }
 
-log "Worker start issue=#$ISSUE repo=$REPO (REST labels only; ORCH_BOARD=${ORCH_BOARD:-0})"
+park_needs_input() {
+  release_issue_parked_needs_input "$ISSUE"
+  notify "$ISSUE" "parked as \`needs-input\` (owner decision). Loop continues with the next ticket."
+  cleanup_issue_workspace
+  exit 0
+}
 
-return_to_main || exit 42
+log "Worker start issue=#$ISSUE repo=$REPO (REST labels; worktrees on)"
+
+# Prefer a worktree so dirty main cannot kill this ticket (or the fleet).
+if ! return_to_main; then
+  log "Main checkout dirty — will run this issue in a worktree (fail-open)"
+fi
 
 # Re-check stack tooling every issue (install if missing, re-probe API, git knobs).
 # Cheap when already installed; first run on a machine installs github/gh-stack.
@@ -88,6 +110,22 @@ ORCH_BASE_BRANCH=${ORCH_BASE_BRANCH:-$(default_branch_name)}
 export ORCH_BASE_BRANCH
 log "Base branch for #$ISSUE: $ORCH_BASE_BRANCH"
 
+if wt=$(ensure_issue_worktree "$ISSUE"); then
+  WORKER_CWD="$wt"
+  USED_WORKTREE=1
+  log "Worktree: $WORKER_CWD"
+else
+  WORKER_CWD="$REPO_DIR"
+  if ! require_clean_tree; then
+    log "Cannot create worktree and main is dirty — #$ISSUE agent-failed; loop continues"
+    release_issue_failed "$ISSUE"
+    notify "$ISSUE" "could not create a worktree and the main checkout has tracked edits. Fix the tree, then \`-agent-failed +ready\`."
+    cleanup_issue_workspace
+    exit 0
+  fi
+  log "Worktree unavailable — running in main checkout $WORKER_CWD"
+fi
+
 # --- Run the orchestrator ----------------------------------------------------
 
 cmd_display=$(orch_cmd_display "$ISSUE")
@@ -101,7 +139,7 @@ export ORCH_STACK_CLI="${ORCH_STACK_CLI:-0}"
 export ORCH_STACK_REPO_OK="${ORCH_STACK_REPO_OK:-0}"
 export ORCH_STACK_READY="${ORCH_STACK_READY:-0}"
 # shellcheck disable=SC2086
-(cd "$REPO_DIR" && \
+(cd "$WORKER_CWD" && \
   ORCH_RUN_EVALS="$ORCH_RUN_EVALS" SKIP_EVALS="$SKIP_EVALS" \
   ORCH_STACK="$ORCH_STACK" \
   ORCH_STACK_CLI="$ORCH_STACK_CLI" \
@@ -125,11 +163,16 @@ AGENT_PID=""
 
 # --- Result ------------------------------------------------------------------
 
+if issue_has_label "$ISSUE" "needs-input"; then
+  log "Issue #$ISSUE: agent parked as needs-input — not a mechanical fail"
+  park_needs_input
+fi
+
 if [ "$rc" -ne 0 ]; then
   log "Issue #$ISSUE: orchestrator FAILED (exit $rc) — see $LOG_DIR/issue-$ISSUE.log"
   release_issue_failed "$ISSUE"
   notify "$ISSUE" "orchestrator failed (exit $rc). Labeled \`agent-failed\`; remove it and add \`ready\` to re-queue."
-  return_to_main || log "WARNING: could not return to clean main after failure"
+  cleanup_issue_workspace
   exit 1
 fi
 
@@ -156,7 +199,7 @@ if [ -n "$pr_n" ] && [ "$ORCH_BASE_BRANCH" != "$DEFAULT_BR" ] && [ "$pr_base" = 
     log "WARNING: could not retarget PR #$pr_n to $ORCH_BASE_BRANCH — parking, no land attempted"
     release_issue_awaiting_merge "$ISSUE"
     notify "$ISSUE" "orchestrator green, but the PR targets \`$DEFAULT_BR\` while this issue stacks on \`$ORCH_BASE_BRANCH\`, and retargeting failed: $pr_url. Parked as \`awaiting-merge\`; retarget with \`gh pr edit $pr_n --base $ORCH_BASE_BRANCH\`."
-    return_to_main || true
+    cleanup_issue_workspace
     exit 0
   fi
 fi
@@ -176,7 +219,7 @@ if [ -n "$pr_n" ] && [ -n "$pr_base" ] && [ "$pr_base" != "$DEFAULT_BR" ]; then
   release_issue_awaiting_merge "$ISSUE"
   log "Issue #$ISSUE stacked on '$pr_base' (PR #$pr_n) — awaiting-merge; loop continues"
   notify "$ISSUE" "orchestrator green — PR stacked on \`$pr_base\`: $pr_url. Labeled \`awaiting-merge\`. Land the chain with \`gh stack merge $pr_n --yes --squash\` (or merge bottom-up); dependents keep building on it meanwhile."
-  return_to_main || true
+  cleanup_issue_workspace
   exit 0
 fi
 
@@ -185,7 +228,7 @@ if [ "${ORCH_AUTO_MERGE:-1}" != "1" ]; then
   release_issue_awaiting_merge "$ISSUE"
   # Keep issue open; awaiting-merge so dependents can stack onto the PR branch
   notify "$ISSUE" "orchestrator green (ORCH_AUTO_MERGE=0).${pr_url:+ PR: $pr_url} Labeled \`awaiting-merge\` — merge the PR to close."
-  return_to_main || true
+  cleanup_issue_workspace
   exit 0
 fi
 
@@ -209,12 +252,12 @@ if [ -n "$pr_n" ]; then
   release_issue_awaiting_merge "$ISSUE"
   notify "$ISSUE" "orchestrator green but land failed — PR open for you.${pr_url:+ $pr_url} Labeled \`awaiting-merge\`; dependents will stack onto its branch."
   log "Land failed for #$ISSUE but open PR exists — parked as awaiting-merge"
-  return_to_main || true
+  cleanup_issue_workspace
   exit 0
 fi
 
 log "Issue #$ISSUE: exit 0 but no PR and not on main — ship failure"
 release_issue_failed "$ISSUE"
 notify "$ISSUE" "orchestrator exited 0 but no PR / not on main. Labeled \`agent-failed\`."
-return_to_main || true
+cleanup_issue_workspace
 exit 1
