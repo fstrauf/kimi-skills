@@ -67,6 +67,16 @@ skills:
   pr-orchestrator-generic:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/pr-orchestrator-generic
+  react-doctor:
+    bucket: A
+    notes: "React health scan via react-doctor CLI; pair with shadscan"
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/react-doctor
+  shadscan:
+    bucket: A
+    notes: "shadcn/ui scan via @shadscan/cli; pair with react-doctor"
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/shadscan
+    install:
+      - ~/.grok/skills/shadscan
   seo-deep-dive:
     bucket: A
     notes: "Bootstrap SEO; universal. Optional Grok convenience link."

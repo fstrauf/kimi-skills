@@ -277,7 +277,8 @@ At the end of a successful run, report:
 
 | Skill | Role |
 |-------|------|
-| `pr-orchestrator-generic` | Multi-repo dual-host loop **without** call-analyzer UI/real-user QA. Prefer for all non-call-analyzer products. Shared stack mode A + `ORCH_STACK` land helpers. |
+| `pr-orchestrator-generic` | Multi-repo dual-host loop **without** call-analyzer UI/real-user QA. Prefer for all non-call-analyzer products. Shared stack mode A + `ORCH_STACK` land helpers. Includes Phase 2.5 React control scan. |
+| `react-doctor` / `shadscan` | Generic Phase 2.5. Policy lives in those skills; this overlay does not restate flags. |
 | `thermo-nuclear-code-quality-review` | Review baseline loaded via read-file into reviewer subagents |
 | `ship-loop` / `pr-loop` | Unattended runners; profile `call-analyzer` sets `ORCH_SKILL=/pr-orchestrator` |
 | `profiles/call-analyzer.env` | Board/repo config; `ORCH_AUTO_MERGE=0` (human merges only) |

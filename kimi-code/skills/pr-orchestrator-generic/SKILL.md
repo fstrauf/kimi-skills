@@ -321,6 +321,7 @@ Optional host-specific extras (do not require them):
 10. Create todos (Kimi: `TodoList` · Grok: `todo_write`, merge false on first create):
    - Understand issue
    - Implement
+   - React control scan
    - Open draft PR
    - Review loop
    - Test gate
@@ -361,6 +362,37 @@ Optional host-specific extras (do not require them):
 6. Ensure a commit exists, e.g. `feat: <issue title> (closes #N)`.
 7. Mark "Implement" done.
 
+### Phase 2.5 — React control scan
+
+Cheap, **fail-open**, after implement and before the draft PR. Not a
+fourth review loop. Do not run a full-project score. Do not
+`agent-failed` if a scanner is missing, flaky, or the repo is not React.
+
+1. Mark "React control scan" in progress.
+2. Resolve skill files (same probe pattern as the thermonuclear baseline).
+   First readable path wins for each name:
+
+```bash
+for name in react-doctor shadscan; do
+  for p in \
+    "$HOME/.kimi-code/skills/$name/SKILL.md" \
+    "$HOME/.grok/skills/$name/SKILL.md" \
+    "$HOME/.agents/skills/$name/SKILL.md"; do
+    if [ -f "$p" ]; then echo "$name $p"; break; fi
+  done
+done
+```
+
+3. Read each readable file. Missing skill → skip that scanner, note it.
+4. Follow **Orchestrator control step** in `react-doctor`, then in
+   `shadscan`. Flags, JSON fields, and must-fix rules live in those
+   files — do not copy them here.
+5. If either scanner edited files, commit
+   (`fix: react-doctor / shadscan on #<N>`) before opening the PR.
+6. Record a one-line result for the later PR comment
+   (`clean` / `N errors remaining` / `skipped: <reason>` per scanner).
+7. Mark "React control scan" done.
+
 ### Phase 3 — Open a draft PR
 
 1. Mark "Open draft PR" in progress.
@@ -376,6 +408,7 @@ Closes #<N>
 <brief summary of changes>
 
 ## Automated gates
+React control scan (react-doctor + shadscan) already ran on the branch.
 An automated thermonuclear review will run on this draft PR, followed by `pnpm test:all`.
 EOF
 )"
@@ -399,13 +432,16 @@ Closes #<N>
 <brief summary of changes>
 
 ## Automated gates
+React control scan (react-doctor + shadscan) already ran on the branch.
 An automated thermonuclear review will run on this draft PR, followed by `pnpm test:all`.
 EOF
 )"
 ```
 
 4. Capture PR number/url: `gh pr view --json number,url`.
-5. Mark "Open draft PR" done.
+5. If Phase 2.5 produced a scanner result, comment it
+   (`ℹ️ React control scan: react-doctor {result} · shadscan {result}`).
+6. Mark "Open draft PR" done.
 
 ### Phase 4 — Review loop via PR comments (max 3 iterations)
 
@@ -592,6 +628,7 @@ Mark "Review loop" done on PASS.
 
 ```
 This PR is ready for review.
+- ℹ️ React control scan: react-doctor {result} · shadscan {result}
 - ✅ Thermonuclear review passed (<N> iteration(s))
 - ✅ Ship gate green (`<exact command>` — live LLM evals not run in the automated loop)
 ```
@@ -628,6 +665,8 @@ At the end of a successful run, report:
 | Skill | Role |
 |-------|------|
 | `pr-orchestrator` | **Call-analyzer thick overlay** (dual-host): same loop + `pnpm test:all`/dev stack + UI gate + real-user QA. Use only in call-analyzer; profile `ORCH_SKILL=/pr-orchestrator`. |
+| `react-doctor` | Phase 2.5 React health scan. Policy + flags live in that skill’s *Orchestrator control step*. |
+| `shadscan` | Phase 2.5 shadcn/ui scan when official shadcn is present. Same pattern. |
 | `thermo-nuclear-code-quality-review` | Review baseline loaded via read-file into reviewer subagents |
 | `ship-loop` (PATH) | Walk-away: scope then ship; `--ask` prints leftovers |
 | `pr-loop` (PATH) / `loop-ready-issues.sh` | Unattended Ready-column runner; **`--profile NAME`** + `--agent kimi\|grok` |
