@@ -194,8 +194,9 @@ git knobs (`rerere`, `remote.pushDefault`). Env exported into the agent process:
 
 pr-loop ships whole `## Depends on` chains without waiting for human merges:
 when a dependency's PR is still open, the loop exports `ORCH_BASE_BRANCH` as
-that PR's head branch and the issue is labeled `awaiting-merge` after its own
-PR opens. The agent contract:
+that PR's head — or the **GitHub stack top** if that PR already has stacked
+children (never open a sibling against an ancestor). The issue is labeled
+`awaiting-merge` after its own PR opens. The agent contract:
 
 1. Fork the feature branch from `origin/$ORCH_BASE_BRANCH` (not from the
    default branch).

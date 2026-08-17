@@ -94,7 +94,7 @@ Ship order answers: “What lands first?” — that is **pr-loop’s job**, not
 | Situation | What to do | Labels |
 |-----------|------------|--------|
 | Spec is clear; needs columns/API from sibling ticket #N that is open or not on main yet | Document order; **still mark ready** | `+ready` — **never** `blocked` |
-| Spec is clear; epic lists ship order 1→2→3 | Same | all children `+ready` after scope |
+| Spec is clear; epic lists ship order 1→2→3 | Same; **one previous child** in Depends-on (epics are one GitHub stack) | all children `+ready` after scope |
 | Product/budget/legal question only a human can answer | Park | `+needs-input` (preferred) or `+blocked` with `## Ship gate (external)` |
 | True external freeze (vendor outage, legal hold) | Park | `+blocked` + short reason in body |
 
@@ -109,19 +109,22 @@ Ship order answers: “What lands first?” — that is **pr-loop’s job**, not
 Always include a machine-parseable section (pr-loop topologically sorts on this):
 
 ```markdown
+## Parent epic
+#268
+
 ## Depends on
-- #110 — geo columns on roasters (land or stack under this first)
-- #111 — meta enricher (preferred before map has pins; map may still ship null-safe)
+- #272 — previous layer only (this is stack PR3)
 ```
 
 Rules for the list:
 
-- Only **ship issues** (other non-epic tickets). Do **not** list parent epics as Depends-on (epics never ship).
+- Only **ship issues** (other non-epic tickets). Do **not** list parent epics as Depends-on (epics never ship). Put the epic under `## Parent epic`.
 - Prefer issue numbers (`#110`), not free text alone.
 - Each dep is a **bullet that starts with `#N`**. Optional prose after that number is fine.
 - Do **not** put other `#N` in that section (no “open as PR #281”, no “Do not list #268”). Those used to be parsed as extra deps.
 - Cutover / “Vue stays until #279” notes belong in Non-goals, not Depends-on.
 - If there are **no** code dependencies, omit the section (or write `## Depends on` / `_None_`).
+- **Epic children = one GitHub stack (a line).** Each child depends on **exactly one** previous child, in ship order. Soft / “preferred before” / parallel notes go in Non-goals. Two children that both depend only on the same ancestor become sibling PRs; GitHub will stack only one of them. Independent work that can ship in either order is a second stack, or waits for the first to land. See [docs/github-loop.md](../../../docs/github-loop.md).
 
 ### External gates only
 
@@ -258,8 +261,10 @@ Prefer **refine** a good ticket over full rewrite. Always include:
 ## Problem
 ## Priority
 ## Milestone
+## Parent epic
+#N
 ## Depends on
-- #N — short reason (omit section or use _None_ if independent)
+- #N — previous ship unit only (omit section or use _None_ if independent)
 ## Current state / root cause
 ### Premise verification
 ### Symptom vs. origin
@@ -314,6 +319,7 @@ Acceptance must include: fix addresses origin (`file:line`), not only the sympto
 - Implementing the feature “to verify” the scope  
 - **`blocked` because a dependency issue is still open or columns are not on main yet** — use `## Depends on` + `ready`  
 - Forcing the human to merge one child, re-run scope-loop, then the next  
+- Epic children that all depend on the same ancestor (sibling PRs). GitHub stacks are a line — each child depends on the **previous** child only.
 
 ---
 

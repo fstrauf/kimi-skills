@@ -74,6 +74,39 @@ Rules:
 - Each dep is a **bullet that starts with `#N`**. Do not put other `#N` in that section (no “open as PR #281”).
 - No deps → omit the section or write `_None_`.
 - pr-loop topologically sorts `ready` issues. An open dep with an open PR or `awaiting-merge` is **satisfied** (stack-through): the dependent forks from that PR’s head via `ORCH_BASE_BRANCH`.
+- **Epics ship as one GitHub stack** (a line, not a bush). See below.
+
+## Epics are one stack
+
+GitHub stacked PRs are a **single chain**: bottom PR targets the default branch; each next PR targets the head of the one below it. Siblings that share a parent are not a stack.
+
+| Rule | Who |
+|------|-----|
+| Epic title (`Epic:` / `[Epic]`) is never `ready` | scope-loop |
+| Each child lists **one** previous child in `## Depends on` (not the epic, not “269 and 272 and 273”) | gh-scope-issue |
+| Soft / parallel notes go in Non-goals, not Depends-on | gh-scope-issue |
+| Next child forks from the **current stack top**, never from an ancestor that already has a stacked child | pr-loop (`ORCH_BASE_BRANCH`) |
+| `gh stack link` only **appends** to that stack. A sibling PR is logged and left unlinked — do not fake a stack | pr-loop |
+| Independent work that can ship in either order is a **second stack** (or waits for the first to land) | scope |
+
+```markdown
+## Parent epic
+#268
+
+## Depends on
+- #272 — previous layer (route manifest). This is stack PR3.
+```
+
+Do **not**:
+
+```markdown
+## Depends on
+- #269 — scaffold
+- #272 — also this
+- #273 — preferred chrome
+```
+
+That DAG opens two PRs against #269 and GitHub will only stack one of them.
 
 ## Commands
 

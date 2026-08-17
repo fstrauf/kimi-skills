@@ -19,6 +19,13 @@ CLI (env: REPO_MATCH=owner/repo):
                    empty + exit 1 when PR unknown
   stale-bases      print open PR numbers whose base is not the default branch
                    and is not the head of any open PR (parent merged/closed)
+  append-head <PR> print the head branch a new layer should fork from
+                   (native GitHub stack top if PR is in one, else longest child path)
+  link-plan <PR>   TSV: how to attach this PR to a native stack
+                   append\\t<stack>\\t<pr>
+                   create\\t<pr pr …>
+                   sibling\\t<stack>\\t<top-pr>\\t<top-head>\\t<pr>
+                   skip\\t<reason>
 """
 
 import json
@@ -131,6 +138,44 @@ class ChainGraph:
         chain.reverse()
         return chain
 
+    def children_of(self, pr_n):
+        """Open PR numbers whose base is this PR's head (may be siblings)."""
+        pr = self.by_num.get(pr_n)
+        if not pr:
+            return []
+        head = pr.get("headRefName") or ""
+        if not head:
+            return []
+        return [
+            p["number"]
+            for p in self.by_num.values()
+            if p["number"] != pr_n and (p.get("baseRefName") or "") == head
+        ]
+
+    def height(self, pr_n, _seen=None):
+        """1 + max descendant height (0 if unknown)."""
+        if pr_n not in self.by_num:
+            return 0
+        seen = _seen if _seen is not None else set()
+        if pr_n in seen:
+            return 1
+        seen.add(pr_n)
+        kids = self.children_of(pr_n)
+        if not kids:
+            return 1
+        return 1 + max(self.height(k, seen) for k in kids)
+
+    def longest_top_from(self, pr_n):
+        """Walk the longest child path. On siblings, prefer the taller line
+        (then lower PR number). Returns pr_n when it has no children."""
+        if pr_n not in self.by_num:
+            return pr_n
+        kids = self.children_of(pr_n)
+        if not kids:
+            return pr_n
+        best = max(kids, key=lambda k: (self.height(k), -k))
+        return self.longest_top_from(best)
+
     def stale_based(self):
         """Open PRs whose base branch is no longer owned by an open PR head
         (the parent PR merged or closed) — these need a restack."""
@@ -166,6 +211,85 @@ def load_closed_prs(repo, limit=40):
         "pr", "list", "--repo", repo, "--state", "closed", "--limit", str(limit),
         "--json", "number,url,isDraft,headRefName,baseRefName,body,title,mergedAt",
     ]) or []
+
+
+def native_stack_containing(stacks, pr_n):
+    """Return (stack_obj, open_pr_numbers_bottom_to_top) or (None, [])."""
+    for st in stacks or []:
+        if st.get("open") is False:
+            continue
+        nums = [
+            p["number"]
+            for p in (st.get("pull_requests") or [])
+            if (p.get("state") or "open") == "open"
+        ]
+        if pr_n in nums:
+            return st, nums
+    return None, []
+
+
+def append_head(pr_n, prs, default, stacks=None):
+    """Head branch a new layer should fork from given an existing PR.
+
+    Native GitHub stack top wins (so we join the official line). Otherwise
+    walk the longest git child path. Empty string if pr_n is unknown.
+    """
+    graph = ChainGraph(prs, default)
+    _st, nums = native_stack_containing(stacks, pr_n)
+    if nums:
+        top = graph.by_num.get(nums[-1])
+        if top and top.get("headRefName"):
+            return top["headRefName"]
+    if pr_n not in graph.by_num:
+        return ""
+    top_n = graph.longest_top_from(pr_n)
+    return graph.by_num[top_n].get("headRefName") or ""
+
+
+def link_plan(pr_n, prs, default, stacks=None):
+    """How to attach PR pr_n to a native GitHub stack.
+
+    append: already based on the stack top — `gh stack link <stack> <pr>`
+    create: no native stack yet — `gh stack link <chain…>`
+    sibling: would fork the stack — do not link
+    skip: nothing to do
+    """
+    graph = ChainGraph(prs, default)
+    chain = graph.chain_up_to(pr_n)
+    if len(chain) < 2:
+        return {"action": "skip", "reason": "single-pr"}
+
+    for ancestor in chain[:-1]:
+        st, nums = native_stack_containing(stacks, ancestor)
+        if not st:
+            continue
+        stack_no = st.get("number")
+        if pr_n in nums:
+            return {"action": "skip", "reason": "already-in-stack", "stack": stack_no}
+        top = nums[-1]
+        new_pr = graph.by_num.get(pr_n) or {}
+        top_pr = graph.by_num.get(top) or {}
+        top_head = top_pr.get("headRefName") or ""
+        if new_pr.get("baseRefName") == top_head and top_head:
+            return {"action": "append", "stack": stack_no, "pr": pr_n, "top": top}
+        return {
+            "action": "sibling",
+            "stack": stack_no,
+            "top": top,
+            "top_head": top_head,
+            "pr": pr_n,
+            "pr_base": new_pr.get("baseRefName") or "",
+        }
+
+    return {"action": "create", "chain": chain}
+
+
+def load_open_stacks(repo):
+    try:
+        data = gh_json(["api", f"repos/{repo}/stacks"])
+    except SystemExit:
+        return []
+    return data or []
 
 
 def default_branch(repo):
@@ -209,6 +333,31 @@ def main():
     if cmd == "stale-bases":
         for n in graph.stale_based():
             print(n)
+        return
+
+    stacks = load_open_stacks(repo)
+    default = graph.default
+
+    if cmd == "append-head":
+        head = append_head(int(sys.argv[2]), prs, default, stacks)
+        if not head:
+            sys.exit(1)
+        print(head)
+        return
+    if cmd == "link-plan":
+        plan = link_plan(int(sys.argv[2]), prs, default, stacks)
+        action = plan["action"]
+        if action == "append":
+            print(f"append\t{plan['stack']}\t{plan['pr']}")
+        elif action == "create":
+            print("create\t" + " ".join(str(n) for n in plan["chain"]))
+        elif action == "sibling":
+            print(
+                f"sibling\t{plan['stack']}\t{plan['top']}\t"
+                f"{plan['top_head']}\t{plan['pr']}"
+            )
+        else:
+            print(f"skip\t{plan.get('reason', '')}")
         return
     sys.stderr.write(__doc__)
     sys.exit(2)

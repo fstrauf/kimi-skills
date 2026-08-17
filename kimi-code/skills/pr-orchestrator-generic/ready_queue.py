@@ -48,6 +48,8 @@ LABEL_PRIORITIES = ("priority/P0", "priority/P1", "priority/P2", "priority/P3")
 SKIP = {"blocked", "agent-failed", "agent-working", "tracking", "epic", "no-ai", "no-agent", "awaiting-merge"}
 state_cache = {}
 _pr_index = None  # {issue_n: {"pr": int, "head": str}} — built once per run
+_pr_list = None   # raw open PR list (for ChainGraph / stack-top)
+_stacks = None    # GitHub stacks API payload; tests may seed []
 
 
 def gh_json(args):
@@ -138,18 +140,31 @@ def open_pr_index():
     rules are pr_chain.issue_pr_index — the single canonical implementation.
     Tests may seed `_pr_index` directly.
     """
-    global _pr_index
+    global _pr_index, _pr_list
     if _pr_index is not None:
         return _pr_index
     try:
         prs = gh_json([
             "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
-            "--json", "number,headRefName,body,title",
+            "--json", "number,headRefName,baseRefName,body,title",
         ])
     except SystemExit:
         prs = []
-    _pr_index = pr_chain.issue_pr_index(prs or [])
+    _pr_list = prs or []
+    _pr_index = pr_chain.issue_pr_index(_pr_list)
     return _pr_index
+
+
+def open_stacks():
+    """Native GitHub stacks. Tests seed `_stacks` (use [] to skip the API)."""
+    global _stacks
+    if _stacks is not None:
+        return _stacks
+    try:
+        _stacks = gh_json(["api", f"repos/{repo}/stacks"]) or []
+    except SystemExit:
+        _stacks = []
+    return _stacks
 
 
 def dep_status(dep):
@@ -235,6 +250,24 @@ def compute_queue(ready_label):
         else:
             pickable.append(c)
 
+    # A ready-but-deferred dep is not shippable. Its dependents must wait
+    # (otherwise #276 ships while #274 is stuck on #273 in-flight).
+    deferred_nums = {c["n"] for c in deferred}
+    changed = True
+    while changed:
+        changed = False
+        keep = []
+        for c in pickable:
+            blocked_by = [d for d in sorted(c["deps"]) if d in deferred_nums]
+            if blocked_by:
+                c["block_reason"] = ",".join(f"#{d}(deferred)" for d in blocked_by)
+                deferred.append(c)
+                deferred_nums.add(c["n"])
+                changed = True
+            else:
+                keep.append(c)
+        pickable = keep
+
     pickable_nums = {c["n"] for c in pickable}
     by_n = {c["n"]: c for c in pickable}
     indeg = {c["n"]: 0 for c in pickable}
@@ -291,24 +324,28 @@ def _issue_body(n):
 
 
 def base_branch_for_issue(n):
-    """Branch issue N must fork from: the head of its topmost open-PR dep.
+    """Branch issue N must fork from.
 
-    With several open-PR deps, the topmost is the one no other candidate
-    depends on (its branch transitively contains the others). Falls back to
-    the highest issue number, then to the repo default branch when no dep
-    has an open PR.
+    Start from the topmost open-PR dep (same as before). If that PR is
+    already in a GitHub stack — or already has child PRs — fork from the
+    **stack top**, never from an ancestor that would create a sibling PR.
     """
     deps = parse_depends_on(_issue_body(n), n)
     idx = open_pr_index()
     cands = [d for d in deps if d in idx and dep_status(d) == "pr_open"]
+    default = default_branch()
     if not cands:
-        return default_branch()
+        return default
     if len(cands) == 1:
-        return idx[cands[0]]["head"]
-    dep_sets = {d: parse_depends_on(_issue_body(d), d) for d in cands}
-    tops = [d for d in cands if not any(d in dep_sets[o] for o in cands if o != d)]
-    pick = max(tops) if tops else max(cands)
-    return idx[pick]["head"]
+        pick = cands[0]
+    else:
+        dep_sets = {d: parse_depends_on(_issue_body(d), d) for d in cands}
+        tops = [d for d in cands if not any(d in dep_sets[o] for o in cands if o != d)]
+        pick = max(tops) if tops else max(cands)
+    pr_n = idx[pick]["pr"]
+    prs = _pr_list if _pr_list is not None else []
+    head = pr_chain.append_head(pr_n, prs, default, open_stacks())
+    return head or idx[pick]["head"]
 
 
 def main():

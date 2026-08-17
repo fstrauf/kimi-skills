@@ -153,12 +153,16 @@ class BaseBranchTest(unittest.TestCase):
         ready_queue.repo = "o/r"
         ready_queue.state_cache.clear()
         ready_queue._pr_index = None
+        ready_queue._pr_list = None
+        ready_queue._stacks = []
         self._orig_default = ready_queue.default_branch
         ready_queue.default_branch = lambda: "master"
 
     def tearDown(self):
         ready_queue.default_branch = self._orig_default
         ready_queue._pr_index = None
+        ready_queue._pr_list = None
+        ready_queue._stacks = None
 
     def seed(self, n, state="OPEN", labels=()):
         ready_queue.state_cache[n] = {
@@ -208,6 +212,27 @@ class BaseBranchTest(unittest.TestCase):
             9: {"pr": 90, "head": "feature/9-compare"},
         }
         self.assertEqual(ready_queue.base_branch_for_issue(10), "feature/9-compare")
+
+    def test_native_stack_top_beats_immediate_parent_head(self):
+        # #272 depends on #269. #269's PR 281 already has stacked child 283.
+        # New work must fork from 283's head, not 281's (that would be a sibling).
+        self._bodies = {272: "## Depends on\n\n- #269\n"}
+        self.seed(269, "OPEN", labels=("awaiting-merge",))
+        ready_queue._pr_index = {269: {"pr": 281, "head": "feature/269-scaffold"}}
+        ready_queue._pr_list = [
+            {"number": 281, "headRefName": "feature/269-scaffold",
+             "baseRefName": "master", "body": "Closes #269", "title": "PR1"},
+            {"number": 283, "headRefName": "feature/275-blog",
+             "baseRefName": "feature/269-scaffold", "body": "Closes #275", "title": "PR5"},
+        ]
+        ready_queue._stacks = [{
+            "number": 284, "open": True,
+            "pull_requests": [
+                {"number": 281, "state": "open"},
+                {"number": 283, "state": "open"},
+            ],
+        }]
+        self.assertEqual(ready_queue.base_branch_for_issue(272), "feature/275-blog")
 
     def test_ready_dep_without_pr_is_not_a_base(self):
         # Dep still in the ready queue (no PR yet) — not a base candidate.
@@ -368,6 +393,53 @@ class ComputeQueueOrderTest(unittest.TestCase):
             ready_queue._pr_index = None
         self.assertEqual([c["n"] for c in ordered], [272, 285])
         self.assertEqual(deferred, [])
+
+    def test_dependent_of_deferred_ready_is_also_deferred(self):
+        """#276 must not ship while #274 is ready-but-waiting on #273 in-flight."""
+        issues = [
+            {
+                "number": 274,
+                "title": "PR4 packs",
+                "labels": [{"name": "ready"}, {"name": "priority/P2"}],
+                "body": "## Depends on\n\n- #273\n",
+            },
+            {
+                "number": 276,
+                "title": "PR6 chrome",
+                "labels": [{"name": "ready"}, {"name": "priority/P2"}],
+                "body": "## Depends on\n\n- #274\n",
+            },
+        ]
+        ready_queue.state_cache[273] = {
+            "number": 273, "state": "OPEN",
+            "labels": [{"name": "agent-working"}], "title": "PR3",
+        }
+        ready_queue.state_cache[274] = {
+            "number": 274, "state": "OPEN",
+            "labels": [{"name": "ready"}], "title": "PR4",
+        }
+        ready_queue._pr_index = {}
+        orig = ready_queue.gh_json
+
+        def fake(args):
+            if args[:2] == ["issue", "list"]:
+                return issues
+            if args[:2] == ["pr", "list"]:
+                return []
+            raise AssertionError(args)
+
+        ready_queue.gh_json = fake
+        try:
+            ordered, deferred = ready_queue.compute_queue("ready")
+        finally:
+            ready_queue.gh_json = orig
+            ready_queue._pr_index = None
+        self.assertEqual(ordered, [])
+        deferred_n = {c["n"] for c in deferred}
+        self.assertEqual(deferred_n, {274, 276})
+        reasons = {c["n"]: c["block_reason"] for c in deferred}
+        self.assertIn("273", reasons[274])
+        self.assertIn("274(deferred)", reasons[276])
 
 
 if __name__ == "__main__":

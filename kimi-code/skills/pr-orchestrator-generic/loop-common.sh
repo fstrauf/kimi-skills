@@ -634,19 +634,49 @@ $(cat "$err_file" 2>/dev/null)"
 # (server-side via `gh stack link`; the branches themselves are plain git).
 # No-op without the extension, with ORCH_STACK=0, or for a single PR.
 link_stack_chain() {
-  local pr=$1 chain count
+  local pr=$1 plan action rest
   case "${ORCH_STACK:-auto}" in 0|false|FALSE|off|OFF) return 0 ;; esac
   gh_stack_cli_available || return 0
   [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] || return 0
-  chain=$(stack_prs_up_to "$pr" 2>/dev/null || true)
-  [ -n "$chain" ] || return 0
-  count=$(printf '%s' "$chain" | wc -w | tr -d ' ')
-  [ "$count" -ge 2 ] || return 0
-  if (cd "$REPO_DIR" && gh stack link $chain >/dev/null 2>&1); then
-    log "Linked native stack: $chain"
-  else
-    log "WARNING: gh stack link failed for chain: $chain (non-fatal)"
-  fi
+  [ -n "${REPO:-}" ] || return 0
+
+  plan=$(REPO_MATCH="$REPO" python3 "$(_pr_chain_py)" link-plan "$pr" 2>/dev/null || true)
+  [ -n "$plan" ] || return 0
+  action=$(printf '%s' "$plan" | cut -f1)
+  rest=$(printf '%s' "$plan" | cut -f2-)
+
+  case "$action" in
+    skip)
+      return 0
+      ;;
+    append)
+      # rest: <stack-number> <pr>
+      if (cd "$REPO_DIR" && gh stack link $rest >/dev/null 2>&1); then
+        log "Appended PR #$pr to native stack $rest"
+      else
+        log "WARNING: gh stack link $rest failed (non-fatal)"
+      fi
+      ;;
+    create)
+      # rest: space-separated PR chain, bottom to top
+      if (cd "$REPO_DIR" && gh stack link $rest >/dev/null 2>&1); then
+        log "Created native stack: $rest"
+      else
+        log "WARNING: gh stack link $rest failed (non-fatal)"
+      fi
+      ;;
+    sibling)
+      # rest: <stack> <top-pr> <top-head> <pr>
+      local stack top head
+      stack=$(printf '%s' "$rest" | cut -f1)
+      top=$(printf '%s' "$rest" | cut -f2)
+      head=$(printf '%s' "$rest" | cut -f3)
+      log "ERROR: PR #$pr is a sibling of GitHub stack #$stack (top is PR #$top on $head) — not linking. Epic children must append on the stack top, not re-base on an ancestor. Next layer will use ORCH_BASE_BRANCH=$head."
+      ;;
+    *)
+      log "WARNING: unknown link-plan '$plan'"
+      ;;
+  esac
 }
 
 # Print "number<TAB>url<TAB>isDraft" for the open PR that closes $1, or empty.

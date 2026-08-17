@@ -100,6 +100,69 @@ class ChainGraphTest(unittest.TestCase):
         # 11/12/13 base onto live open heads → fine. 10/20 target master → fine.
         self.assertEqual(self.g.stale_based(), [30])
 
+    def test_longest_top_from_linear(self):
+        self.assertEqual(self.g.longest_top_from(10), 12)
+        self.assertEqual(self.g.longest_top_from(20), 20)
+
+    def test_children_siblings(self):
+        # 11 and 13 both base on feature/10-base
+        self.assertEqual(sorted(self.g.children_of(10)), [11, 13])
+
+
+class NativeStackTest(unittest.TestCase):
+    STACKS = [{
+        "number": 284, "open": True,
+        "pull_requests": [
+            {"number": 281, "state": "open"},
+            {"number": 283, "state": "open"},
+        ],
+    }]
+    PRS = [
+        {"number": 281, "headRefName": "feature/269-scaffold",
+         "baseRefName": "master", "body": "Closes #269", "title": "PR1"},
+        {"number": 283, "headRefName": "feature/275-blog",
+         "baseRefName": "feature/269-scaffold", "body": "Closes #275", "title": "PR5"},
+        {"number": 287, "headRefName": "feature/272-seo",
+         "baseRefName": "feature/269-scaffold", "body": "Closes #272", "title": "PR2"},
+        {"number": 288, "headRefName": "feature/273-loop",
+         "baseRefName": "feature/272-seo", "body": "Closes #273", "title": "PR3"},
+    ]
+
+    def test_append_head_uses_native_stack_top(self):
+        # 281 is in stack 284 whose top is 283 — not the taller git line 287→288.
+        self.assertEqual(
+            pr_chain.append_head(281, self.PRS, "master", self.STACKS),
+            "feature/275-blog",
+        )
+
+    def test_append_head_without_native_stack_follows_longest_git_line(self):
+        self.assertEqual(
+            pr_chain.append_head(281, self.PRS, "master", []),
+            "feature/273-loop",
+        )
+
+    def test_link_plan_sibling(self):
+        plan = pr_chain.link_plan(287, self.PRS, "master", self.STACKS)
+        self.assertEqual(plan["action"], "sibling")
+        self.assertEqual(plan["stack"], 284)
+        self.assertEqual(plan["top"], 283)
+
+    def test_link_plan_append_when_based_on_top(self):
+        prs = list(self.PRS)
+        prs[2] = dict(prs[2], baseRefName="feature/275-blog")
+        plan = pr_chain.link_plan(287, prs, "master", self.STACKS)
+        self.assertEqual(plan["action"], "append")
+        self.assertEqual(plan["stack"], 284)
+
+    def test_link_plan_create_when_no_native_stack(self):
+        plan = pr_chain.link_plan(287, self.PRS, "master", [])
+        self.assertEqual(plan["action"], "create")
+        self.assertEqual(plan["chain"], [281, 287])
+
+    def test_link_plan_skip_single(self):
+        plan = pr_chain.link_plan(20, PRS, DEFAULT, [])
+        self.assertEqual(plan["action"], "skip")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
