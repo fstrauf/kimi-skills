@@ -15,7 +15,7 @@
 #                        → agent-failed (mechanical fail; re-add ready to retry)
 #                        → ready again on interrupt
 #
-# Exit: 0 success/skip/park · 1 fail · 42 preflight (worktree + main both unusable) · 130 interrupt
+# Exit: 0 success/skip/park · 1 fail · 42 preflight (worktree + main both unusable) · 44 agent quota exhausted · 130 interrupt
 #
 
 set -uo pipefail
@@ -169,6 +169,16 @@ if issue_has_label "$ISSUE" "needs-input"; then
 fi
 
 if [ "$rc" -ne 0 ]; then
+  # Agent backend dead (quota / rate limit)? Not a ticket failure: restore the
+  # ready label and abort the whole run — remaining tickets would fail the same.
+  if agent_log_hit_quota "$LOG_DIR/issue-$ISSUE.log"; then
+    log "Issue #$ISSUE: agent '$ORCH_AGENT' quota/rate-limit exhausted — aborting run (not a ticket failure)"
+    release_issue_interrupted "$ISSUE"
+    notify "$ISSUE" "agent \`$ORCH_AGENT\` ran out of quota mid-run — not a ticket failure. Re-queued as \`ready\` and the loop aborted. Switch agent or top up quota, then re-run."
+    print_quota_abort_guidance "$ISSUE" "$LOG_DIR/issue-$ISSUE.log"
+    cleanup_issue_workspace
+    exit 44
+  fi
   log "Issue #$ISSUE: orchestrator FAILED (exit $rc) — see $LOG_DIR/issue-$ISSUE.log"
   release_issue_failed "$ISSUE"
   notify "$ISSUE" "orchestrator failed (exit $rc). Labeled \`agent-failed\`; remove it and add \`ready\` to re-queue."

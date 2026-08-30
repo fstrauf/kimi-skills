@@ -401,6 +401,11 @@ while true; do
   if [ "$rc" -eq 130 ] || [ "$rc" -eq 143 ]; then
     log "Interrupted — exiting. Issue #$issue has label ready restored."
     exit "$rc"
+  elif [ "$rc" -eq 44 ]; then
+    # Worker already restored ready + printed guidance. Stop the fleet:
+    # every remaining ticket would die on the same exhausted quota.
+    log "Agent quota exhausted — run aborted early. Issue #$issue re-queued as \`${ORCH_READY_LABEL:-ready}\`."
+    exit 44
   elif [ "$rc" -eq 42 ]; then
     # Legacy preflight. Worktrees should make this rare — park and continue.
     log "Worker preflight failed for #$issue — continuing (fail-open)."

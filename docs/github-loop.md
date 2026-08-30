@@ -157,6 +157,7 @@ Logs: `~/.kimi-code/pr-loop-<profile>/` or `~/.grok/pr-loop-<profile>/`. Locks a
 | Scope then ship | `ship-loop --profile NAME` |
 | Land blocked (shim / husky / stack) | `awaiting-merge`; leftovers print `gh stack merge <top-pr> --yes --squash` |
 | Dirty main checkout | Issue runs in a worktree. Tracked edits on main are left untouched. |
+| Agent quota / rate-limit exhausted | Abort the whole run (exit 44), print switch-agent guidance. Current issue goes back to `ready` (pr-loop) / keeps `scoping` (scope-loop) — never `agent-failed`. Signatures: `agent_health.py`. |
 
 Mechanical `agent-failed` only: process crash, ship-gate red after retries, review FAIL after 3. Not “I had a question.”
 

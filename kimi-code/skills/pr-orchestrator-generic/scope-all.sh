@@ -296,6 +296,14 @@ for N in $ISSUES; do
   else
     rc=$?
     dur=$(( $(date +%s) - start ))
+    # Agent backend dead (quota / rate limit)? Abort the whole loop — every
+    # remaining issue would fail the same way. scoping label stays (retry
+    # visibility); the issue is simply re-picked by the next run.
+    if agent_log_hit_quota "$LOGDIR/issue-$N.log"; then
+      log "--- issue #$N: agent '$ORCH_AGENT' quota/rate-limit exhausted — aborting loop (not a ticket failure) ---"
+      print_quota_abort_guidance "$N" "$LOGDIR/issue-$N.log"
+      exit 44
+    fi
     log "--- issue #$N: FAILED (exit $rc, ${dur}s) — see issue-$N.log ---"
     # Leave scoping label if we added it so a retry is visible; do not add ready
     fail=$((fail + 1))

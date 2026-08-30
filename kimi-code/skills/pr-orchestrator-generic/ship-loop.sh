@@ -82,6 +82,10 @@ echo "[$(date '+%H:%M:%S')] ship-loop start  profile=$LOOP_PROFILE_ARG  repo=$RE
 echo "[$(date '+%H:%M:%S')] 1/2 scope-loop"
 bash "$SCRIPT_DIR/scope-all.sh" ${FORWARD[@]+"${FORWARD[@]}"}
 scope_rc=$?
+if [ "$scope_rc" -eq 44 ]; then
+  echo "[$(date '+%H:%M:%S')] ship-loop: scope-loop aborted on agent quota — skipping pr-loop (switch agent or top up, then re-run)"
+  exit 44
+fi
 
 echo "[$(date '+%H:%M:%S')] 2/2 pr-loop"
 bash "$SCRIPT_DIR/loop-ready-issues.sh" ${FORWARD[@]+"${FORWARD[@]}"}
@@ -89,5 +93,10 @@ pr_rc=$?
 
 echo "[$(date '+%H:%M:%S')] ship-loop finished (scope_exit=$scope_rc pr_exit=$pr_rc)"
 report_leftovers
+# Agent quota exhaustion (exit 44) is an environment failure, not a leftover —
+# propagate it so callers can tell "stopped early" apart from "parked tickets".
+if [ "$pr_rc" -eq 44 ]; then
+  exit 44
+fi
 # Fail-open: leftover parked tickets are not a failed run.
 exit 0

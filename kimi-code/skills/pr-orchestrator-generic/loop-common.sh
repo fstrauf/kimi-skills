@@ -503,6 +503,50 @@ _labels_py() {
   echo "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.py"
 }
 
+# --- Agent quota / rate-limit exhaustion --------------------------------------
+# Signatures live in agent_health.py (one home, unit-tested). When the agent
+# CLI dies on quota, the run aborts with exit 44 instead of grinding through
+# the rest of the queue — every ticket would fail the same way.
+
+_agent_health_py() {
+  echo "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent_health.py"
+}
+
+# True if the agent log tail shows a quota / rate-limit exhaustion signature.
+agent_log_hit_quota() { # <agent-log-file>
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  python3 "$(_agent_health_py)" quota-check "$1" >/dev/null 2>&1
+}
+
+# Print the matched log line (empty when no signature).
+agent_quota_error_line() { # <agent-log-file>
+  python3 "$(_agent_health_py)" quota-check "$1" 2>/dev/null || true
+}
+
+_quota_guidance_log() {
+  if type log >/dev/null 2>&1; then log "$@"; else echo "$@"; fi
+}
+
+# Loud terminal guidance when the loop aborts on agent quota exhaustion.
+print_quota_abort_guidance() { # <issue> <agent-log-file>
+  local issue=$1 logfile=$2 line other profile_args=""
+  line=$(agent_quota_error_line "$logfile")
+  case "${ORCH_AGENT:-kimi}" in
+    grok) other=kimi ;;
+    *)    other=grok ;;
+  esac
+  [ -n "${LOOP_PROFILE:-}" ] && profile_args="--profile $LOOP_PROFILE "
+  _quota_guidance_log "============================================================"
+  _quota_guidance_log "ABORT: agent '${ORCH_AGENT:-kimi}' is out of quota / rate-limited."
+  [ -n "$line" ] && _quota_guidance_log "  log: $line"
+  _quota_guidance_log "Issue #$issue is NOT marked failed — it stays on the queue."
+  _quota_guidance_log "Remaining tickets were skipped: they would all fail the same way."
+  _quota_guidance_log "To continue:"
+  _quota_guidance_log "  1. switch agent:  ship-loop ${profile_args}--agent $other"
+  _quota_guidance_log "  2. or top up / wait for the quota reset, then re-run the same command"
+  _quota_guidance_log "============================================================"
+}
+
 # True if open PR $1 is part of a multi-PR base/head chain in $REPO
 # (parent and/or child open PR). Standalone PRs targeting trunk return false.
 pr_is_in_open_stack() {
