@@ -108,6 +108,10 @@ list_loop_profiles() {
 : "${HEARTBEAT_SECONDS:=60}"
 : "${MENTION_USER:=}"
 : "${ORCH_AGENT:=kimi}"
+# A wedged agent (finished answering but CLI never exited) freezes the issue
+# log while the process stays alive. Kill it after this many minutes of no log
+# growth — see agent_log_is_stale.
+: "${ORCH_AGENT_STALE_MINUTES:=15}"
 
 # Which agent CLI runs the orchestrator skill for each issue.
 #   kimi  → kimi -p "/skill:pr-orchestrator-generic <N>"
@@ -516,6 +520,29 @@ _agent_health_py() {
 agent_log_hit_quota() { # <agent-log-file>
   [ -n "${1:-}" ] && [ -f "$1" ] || return 1
   python3 "$(_agent_health_py)" quota-check "$1" >/dev/null 2>&1
+}
+
+# True if the agent log has not been written for ORCH_AGENT_STALE_MINUTES while
+# the CLI process is still alive — a wedged agent that finished its answer but
+# never exited (typically because it spawned child servers — dev stack,
+# Playwright MCP — that hold its stdout pipes open). Without this, the pr-loop
+# worker would print "running NNNm" forever with a frozen log.
+agent_log_is_stale() { # <agent-log-file>
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  python3 "$(_agent_health_py)" stale-check "$1" "${ORCH_AGENT_STALE_MINUTES:-15}" >/dev/null 2>&1
+}
+
+# TERM the whole descendant tree of $1 (children first), then the root itself.
+# The agent CLI is launched as a subshell whose children (the CLI, then dev
+# stack / Playwright MCP servers) hold the log pipes open — killing only the
+# subshell would orphan them and keep the wedge alive.
+kill_process_tree() { # <pid>
+  local pid=$1 child
+  [ -n "$pid" ] || return 0
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_process_tree "$child"
+  done
+  kill "$pid" 2>/dev/null || true
 }
 
 # Print the matched log line (empty when no signature).

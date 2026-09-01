@@ -149,6 +149,7 @@ export ORCH_STACK_READY="${ORCH_STACK_READY:-0}"
   "$ORCH_CLI" -p "$ORCH_SKILL $ISSUE" $ORCH_CLI_ARGS) \
   > "$LOG_DIR/issue-$ISSUE.log" 2>&1 &
 AGENT_PID=$!
+STALE_KILLED=0
 while kill -0 "$AGENT_PID" 2>/dev/null; do
   sleep "$HEARTBEAT_SECONDS"
   kill -0 "$AGENT_PID" 2>/dev/null || break
@@ -156,6 +157,16 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
   size=$(stat -f%z "$LOG_DIR/issue-$ISSUE.log" 2>/dev/null || echo 0)
   last=$(grep -v '^[[:space:]]*$' "$LOG_DIR/issue-$ISSUE.log" 2>/dev/null | tail -1 | cut -c1-100)
   log "Issue #$ISSUE running ${elapsed}m — log ${size} bytes${last:+ | last: $last}"
+  # Stale-agent watchdog: the CLI is expected to exit when its run finishes.
+  # A live process with a log frozen for ORCH_AGENT_STALE_MINUTES means it
+  # wedged on exit (child servers hold its output pipes). Kill the whole tree
+  # so the loop can proceed — the result is classified by work product below.
+  if agent_log_is_stale "$LOG_DIR/issue-$ISSUE.log"; then
+    log "Issue #$ISSUE: agent log frozen ${ORCH_AGENT_STALE_MINUTES}+ min while process alive — killing wedged agent tree"
+    STALE_KILLED=1
+    kill_process_tree "$AGENT_PID"
+    break
+  fi
 done
 wait "$AGENT_PID"
 rc=$?
@@ -163,9 +174,26 @@ AGENT_PID=""
 
 # --- Result ------------------------------------------------------------------
 
+# An agent that parked explicitly on a question wins over the stale heuristics.
 if issue_has_label "$ISSUE" "needs-input"; then
   log "Issue #$ISSUE: agent parked as needs-input — not a mechanical fail"
   park_needs_input
+fi
+
+# A stale-killed agent (finished answering, CLI never exited) must be judged by
+# what it produced, not by the kill's exit code. If it opened a PR, the run
+# effectively completed — hand off to the normal result flow. If it produced no
+# PR, it was a genuine hang: mechanical failure.
+if [ "$STALE_KILLED" = 1 ]; then
+  stale_line=$(find_open_pr_for_issue "$ISSUE" || true)
+  if [ -n "$stale_line" ]; then
+    stale_pr=$(printf '%s' "$stale_line" | cut -f1)
+    log "Issue #$ISSUE: stale-killed agent left open PR #$stale_pr — treating as completed run"
+    rc=0
+  else
+    log "Issue #$ISSUE: stale-killed agent left no PR — genuine hang, mechanical failure"
+    rc=1
+  fi
 fi
 
 if [ "$rc" -ne 0 ]; then
