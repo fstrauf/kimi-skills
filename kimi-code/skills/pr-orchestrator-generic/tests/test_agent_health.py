@@ -119,5 +119,108 @@ class LogIsStaleTest(unittest.TestCase):
             self.assertEqual(rc, 2)
 
 
+PS_TABLE = """\
+  100     1   00:00:05
+  200   100   00:01:10
+  300   200   00:00:20
+  400     1   00:00:07
+  500   400   00:00:03
+"""
+
+
+class ParsePsTableTest(unittest.TestCase):
+    def test_parses_pid_ppid_time(self):
+        table = agent_health.parse_ps_table(PS_TABLE)
+        self.assertEqual(table[100], (1, 5))
+        self.assertEqual(table[200], (100, 70))
+        self.assertEqual(table[300], (200, 20))
+
+    def test_parses_all_time_shapes(self):
+        self.assertEqual(agent_health._parse_ps_time("01:02"), 62)
+        self.assertEqual(agent_health._parse_ps_time("1:02:03"), 3723)
+        self.assertEqual(agent_health._parse_ps_time("2-03:04:05"), 183845)
+        # macOS prints hundredths: MM:SS.hs
+        self.assertEqual(agent_health._parse_ps_time("18:45.42"), 1125)
+        self.assertEqual(agent_health._parse_ps_time("1:02:03.99"), 3723)
+
+    def test_skips_malformed_lines(self):
+        table = agent_health.parse_ps_table("PID PPID TIME\nnot-a-row\n  1 0 00:00:01\n")
+        self.assertEqual(table, {1: (0, 1)})
+
+
+class TreeCpuSecondsTest(unittest.TestCase):
+    def test_sums_root_and_descendants_only(self):
+        table = agent_health.parse_ps_table(PS_TABLE)
+        # 100 + 200 + 300; the 400/500 subtree is unrelated.
+        self.assertEqual(agent_health.tree_cpu_seconds(table, 100), 95)
+
+    def test_subtree_root(self):
+        table = agent_health.parse_ps_table(PS_TABLE)
+        self.assertEqual(agent_health.tree_cpu_seconds(table, 400), 10)
+
+    def test_missing_root_returns_none(self):
+        table = agent_health.parse_ps_table(PS_TABLE)
+        self.assertIsNone(agent_health.tree_cpu_seconds(table, 999))
+
+
+class TreeIsBusyTest(unittest.TestCase):
+    def test_first_sample_counts_as_busy_and_writes_baseline(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = os.path.join(td, "cpu")
+            self.assertTrue(agent_health.tree_is_busy(state, 100.0))
+            with open(state) as fh:
+                self.assertEqual(float(fh.read()), 100.0)
+
+    def test_flat_second_sample_is_idle(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = os.path.join(td, "cpu")
+            agent_health.tree_is_busy(state, 100.0)
+            self.assertFalse(agent_health.tree_is_busy(state, 100.0))
+
+    def test_increased_sample_is_busy(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = os.path.join(td, "cpu")
+            agent_health.tree_is_busy(state, 100.0)
+            self.assertTrue(agent_health.tree_is_busy(state, 130.5))
+
+    def test_corrupt_state_counts_as_first_sample(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = os.path.join(td, "cpu")
+            with open(state, "w") as fh:
+                fh.write("garbage")
+            self.assertTrue(agent_health.tree_is_busy(state, 100.0))
+
+    def test_tree_busy_cli_live_process(self):
+        # Feed synthetic ps tables through the real CLI path: pid's CPU grows
+        # between samples → busy; flat → idle. No wall-clock dependence.
+        with tempfile.TemporaryDirectory() as td:
+            state = os.path.join(td, "cpu")
+            pid = str(os.getpid())
+            samples = iter([f"  {pid}     1   00:00:05\n", f"  {pid}     1   00:00:07\n"])
+
+            class _Result:
+                def __init__(self, out):
+                    self.stdout = out
+
+            def fake_run(*args, **kwargs):
+                return _Result(next(samples))
+
+            original = agent_health.subprocess.run
+            agent_health.subprocess.run = fake_run
+            try:
+                rc = agent_health.main(["agent_health.py", "tree-busy", pid, state])
+                self.assertEqual(rc, 0)  # first sample: baseline
+                rc = agent_health.main(["agent_health.py", "tree-busy", pid, state])
+                self.assertEqual(rc, 0)  # CPU grew: busy
+            finally:
+                agent_health.subprocess.run = original
+
+    def test_tree_busy_cli_gone_process(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = os.path.join(td, "cpu")
+            rc = agent_health.main(["agent_health.py", "tree-busy", "99999999", state])
+            self.assertEqual(rc, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

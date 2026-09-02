@@ -159,13 +159,22 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
   log "Issue #$ISSUE running ${elapsed}m — log ${size} bytes${last:+ | last: $last}"
   # Stale-agent watchdog: the CLI is expected to exit when its run finishes.
   # A live process with a log frozen for ORCH_AGENT_STALE_MINUTES means it
-  # wedged on exit (child servers hold its output pipes). Kill the whole tree
-  # so the loop can proceed — the result is classified by work product below.
+  # wedged on exit (child servers hold its output pipes) — but only when the
+  # tree is also idle. A frozen log with a CPU-burning tree is a long silent
+  # phase (delegated subagent, cold build): not a wedge, never kill it.
   if agent_log_is_stale "$LOG_DIR/issue-$ISSUE.log"; then
-    log "Issue #$ISSUE: agent log frozen ${ORCH_AGENT_STALE_MINUTES}+ min while process alive — killing wedged agent tree"
-    STALE_KILLED=1
-    kill_process_tree "$AGENT_PID"
-    break
+    if agent_tree_is_busy "$AGENT_PID" "$LOG_DIR/issue-$ISSUE.cputime"; then
+      # Heartbeat into the agent log: informs live-stream watchers and resets
+      # the mtime staleness clock for the next window.
+      echo "[loop] log quiet ${ORCH_AGENT_STALE_MINUTES:-15}m+ but agent tree is busy (build/subagent) — continuing" \
+        >> "$LOG_DIR/issue-$ISSUE.log"
+      log "Issue #$ISSUE: log stale but agent tree busy — not killing"
+    else
+      log "Issue #$ISSUE: agent log frozen ${ORCH_AGENT_STALE_MINUTES:-15}+ min and tree idle — killing wedged agent tree"
+      STALE_KILLED=1
+      kill_process_tree "$AGENT_PID"
+      break
+    fi
   fi
 done
 wait "$AGENT_PID"

@@ -158,7 +158,7 @@ Logs: `~/.kimi-code/pr-loop-<profile>/` or `~/.grok/pr-loop-<profile>/`. Locks a
 | Land blocked (shim / husky / stack) | `awaiting-merge`; leftovers print `gh stack merge <top-pr> --yes --squash` |
 | Dirty main checkout | Issue runs in a worktree. Tracked edits on main are left untouched. |
 | Agent quota / rate-limit exhausted | Abort the whole run (exit 44), print switch-agent guidance. Current issue goes back to `ready` (pr-loop) / keeps `scoping` (scope-loop) — never `agent-failed`. Signatures: `agent_health.py`. |
-| Agent wedged on exit (log frozen) | The CLI is expected to exit when its run finishes. A live process with a log untouched for `ORCH_AGENT_STALE_MINUTES` (default 15) is a wedged agent (child servers holding its output pipes). The worker kills the whole process tree and judges the run by work product: an open PR → completed run (normal result flow); no PR → `agent-failed`. Detector: `agent_health.py stale-check`. |
+| Agent wedged on exit (log frozen) | The CLI is expected to exit when its run finishes. A live process with a log untouched for `ORCH_AGENT_STALE_MINUTES` (default 15) **and an idle process tree** is a wedged agent (child servers holding its output pipes). The worker kills the whole process tree and judges the run by work product: an open PR → completed run (normal result flow); no PR → `agent-failed`. A frozen log with a CPU-burning tree is a long silent phase (delegated subagent, cold build) — the worker heartbeats into the log and keeps waiting, never kills. Detectors: `agent_health.py stale-check` + `tree-busy`. |
 
 Mechanical `agent-failed` only: process crash, ship-gate red after retries, review FAIL after 3. Not “I had a question.”
 

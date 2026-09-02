@@ -532,6 +532,16 @@ agent_log_is_stale() { # <agent-log-file>
   python3 "$(_agent_health_py)" stale-check "$1" "${ORCH_AGENT_STALE_MINUTES:-15}" >/dev/null 2>&1
 }
 
+# True if the agent's process tree burned CPU since the last heartbeat (a long
+# silent phase: delegated implementer subagent, cold cargo/pnpm build in the
+# issue worktree), as opposed to a wedged tree idling at zero while child
+# servers hold its log pipes open. $2 is a scratch state file carrying the
+# previous CPU sample between heartbeats.
+agent_tree_is_busy() { # <pid> <state-file>
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  python3 "$(_agent_health_py)" tree-busy "$1" "$2" >/dev/null 2>&1
+}
+
 # TERM the whole descendant tree of $1 (children first), then the root itself.
 # The agent CLI is launched as a subshell whose children (the CLI, then dev
 # stack / Playwright MCP servers) hold the log pipes open — killing only the
