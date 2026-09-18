@@ -91,6 +91,7 @@ Two-tier gate (epic #1748): this phase runs `pnpm test:pr` — the lean, fail-cl
      - command: `cd webapp && ALLOW_TEST_HELPERS=true pnpm dev:stack`
      - Kimi: `run_in_background: true`, `disable_timeout: true`
      - Grok: `background: true`, `timeout: 0`
+     - Claude: `Bash` with `run_in_background: true`
      - Ori: `bash` with large `timeoutMs` (≥ 3600000) or via `spawn_agent`
      - description: `dev stack for pnpm test:pr`
    - `ALLOW_TEST_HELPERS=true` is mandatory: e2e calls `/api/test-utils/*`. An already-running stack must also have been started with the flag; restart if unsure.
@@ -99,6 +100,7 @@ Two-tier gate (epic #1748): this phase runs `pnpm test:pr` — the lean, fail-cl
    - command: `cd webapp && pnpm test:pr --base "${ORCH_BASE_BRANCH:-dev}"`
    - Same background flags as above; much shorter than the old full-suite run, but a calc-path or unmapped-file diff can still escalate to the fuller tier — give it room
    - Wait until completion (Kimi: `TaskOutput` · Grok: `get_command_or_subagent_output` with large `timeout_ms` · Ori: `wait_agent` on spawned agent or `TaskOutput` through `task`)
+   - **Claude:** `TaskOutput(task_id, block=true, timeout=600000)`, repeated **in the same turn** until it reports completed. Never end the turn with the gate still running: nothing will wake a subagent when it finishes (see the generic skill's *Claude: never end a turn on a pending wait*).
 4. **Keep the dev stack running** for Phase 6. Record `started_dev_stack`.
 5. If tests pass: `gh pr comment <pr_number> --body "✅ pnpm test:pr passed (lean PR-tier gate — full pnpm test:all runs once at dev→main release, not per-PR)."`
 6. If tests fail:

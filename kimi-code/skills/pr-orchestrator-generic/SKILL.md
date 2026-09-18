@@ -49,15 +49,26 @@ Write the host name into your working notes (`host: kimi|grok|ori|claude`) and s
 | Purpose | Kimi | Grok | Ori | Claude |
 |---------|------|------|-----|--------|
 | Shell (git, gh, short commands) | `Bash` | `run_terminal_command` | `bash` | `Bash` |
-| Long-running shell (`pnpm test:all`, servers) | `Bash` with `run_in_background: true`, `disable_timeout: true` | `run_terminal_command` with `background: true`, large/`0` `timeout` | Prefer `spawn_agent` + `wait_agent`; use `bash` with `timeoutMs` ≥ 3600000 only when no background agent is needed | `Bash` with `run_in_background: true` (max `timeout` 600000 for foreground) |
-| Wait on background work | `TaskOutput(block=true)` / wait on task id | `get_command_or_subagent_output` with `task_ids` + positive `timeout_ms` | `wait_agent` | Completion notification, or `TaskOutput` on the task id |
+| Long-running shell (`pnpm test:all`, servers) | `Bash` with `run_in_background: true`, `disable_timeout: true` | `run_terminal_command` with `background: true`, large/`0` `timeout` | Prefer `spawn_agent` + `wait_agent`; use `bash` with `timeoutMs` ≥ 3600000 only when no background agent is needed | `Bash` with `run_in_background: true` (max `timeout` 600000 for foreground), then wait **in the same turn** per the next row |
+| Wait on background work | `TaskOutput(block=true)` / wait on task id | `get_command_or_subagent_output` with `task_ids` + positive `timeout_ms` | `wait_agent` | `TaskOutput(task_id, block=true, timeout=600000)` in a loop **within the same turn** until the task reports completed. **Never** end the turn expecting a completion notification — see *Claude: never end a turn on a pending wait* below |
 | Stop background work | kill via shell / host stop API if available | `kill_command_or_subagent` | `stop_agent` | `TaskStop` |
-| Implementation / fix / review subagents | `Agent` (coder/reviewer) | `spawn_subagent` (`subagent_type: "general-purpose"`; prefer `isolation: "worktree"` for implementers) | `task` with `result_schema` for structured short work; `spawn_agent` + `wait_agent` for long work or progress monitoring | `Agent` with `subagent_type` = routed `agent` (`loop-implementer`, `loop-reviewer`, `loop-fixer`, `loop-explorer`, `loop-triage`) and `model` = routed `model` |
+| Implementation / fix / review subagents | `Agent` (coder/reviewer) | `spawn_subagent` (`subagent_type: "general-purpose"`; prefer `isolation: "worktree"` for implementers) | `task` with `result_schema` for structured short work; `spawn_agent` + `wait_agent` for long work or progress monitoring | `Agent` with `subagent_type` = routed `agent` (`loop-implementer`, `loop-reviewer`, `loop-fixer`, `loop-explorer`, `loop-triage`) and `model` = routed `model`, spawned with **`run_in_background: false`** so the call blocks and returns the result in-turn |
 | Progress tracking | `TodoList` | `todo_write` | `update_goal` / inline comments | `TodoWrite` (or task tools) |
 | Goal / status (optional) | `CreateGoal` | `update_goal` (`message` / `completed` / `blocked_reason`) | `set_goal` / `update_goal` | — (state markers only) |
 | Read files | `Read` | `read_file` | `read` | `Read` |
 | Search code | `Grep`, `Glob` | `grep`, `list_dir` | `grep`, `glob` | `Grep`, `Glob` (broad sweeps → `loop-explorer`) |
 | Write small state files | shell redirect / write tools | `write` or shell via `run_terminal_command` | `write` or `edit` or shell via `bash` | `Write` or shell redirect |
+
+### Claude: never end a turn on a pending wait
+
+A background-completion notification is delivered **only to a top-level interactive session**. When this orchestrator runs as a subagent (launched with the `Agent` tool, which is how parent sessions and pr-loop hand it an issue), nothing wakes it after a background job or background subagent finishes. If it ends its turn with "waiting for the reviewer", "I'll pick up once `test:pr` completes", or anything similar, **the run is dead**, and it stays dead until a human notices. This happened on two consecutive runs on 2026-09-18, both right after spawning a long job, and both times the brief had warned against it explicitly.
+
+Rules for Claude hosts:
+
+- Spawn review, implementer, fixer and triage subagents with `run_in_background: false`. The `Agent` call returns their result in-turn.
+- Long shell jobs (`pnpm test:pr`, `pnpm test:all`, the dev stack readiness probe) do go in the background because they exceed the 10-minute foreground cap. Immediately wait on them with `TaskOutput(task_id, block=true, timeout=600000)`, and repeat the call until the task reports completed. A timeout means "still running", so call again in the same turn.
+- Before ending any turn, check that every job you started has finished and you've read its result. The only legitimate stopping points are `gh pr ready` succeeding, a `needs-input` exit, or a genuine failure reported on the PR.
+
 
 **Rules:**
 
@@ -429,7 +440,7 @@ Required semantics:
    **Ori:** prefer `task` with this result shape when the work is short and bounded:
    `{ "status": "ok|needs-input|failed", "summary": "...", "changed_files": [], "commits": [], "tests": [] }`.
    Use `spawn_agent` with a detailed brief for long work or when progress monitoring is useful; wait with `wait_agent`. Pass `model` only as a routing hint when explicitly configured; otherwise retain OpenRouter Auto.
-   **Claude:** `Agent` with `subagent_type` / `model` from the route, `run_in_background: true`; continue when the completion notification arrives.
+   **Claude:** `Agent` with `subagent_type` / `model` from the route, **`run_in_background: false`**: the call blocks and returns the subagent's result directly. Do not background it and wait for a completion notification; see *Claude: never end a turn on a pending wait*.
 
 2. Inspect:
    - `git status --short`
@@ -703,7 +714,7 @@ Mark "Review loop" done on PASS.
 
    **Hard rule:** do **not** invoke `pnpm run test:evals` or `cargo test … -- --ignored` live-eval filters in this phase unless the user explicitly set `ORCH_RUN_EVALS=1` in the environment.
 
-5. **Run the resolved command** as a **background** shell task (full suites exceed foreground timeouts). Wait until completion.
+5. **Run the resolved command** as a **background** shell task (full suites exceed foreground timeouts). Wait until completion **within the same turn**, using the host's blocking wait (Claude: `TaskOutput(block=true, timeout=600000)`, repeated until completed). Never end the turn with the gate still running.
 6. If pass: `gh pr comment <pr_number> --body "✅ Ship gate passed: \`<exact command>\`."`
 7. If fail:
 
