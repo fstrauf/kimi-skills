@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-Personal, cross-repo agent skills (Kimi Code, Grok Build, others). GitHub name is still `kimi-skills`; treat this tree as the **agent-skills** source of truth, not Kimi-only.
+Personal, cross-repo agent skills (Kimi Code, Grok Build, Claude Code, others). GitHub name is still `kimi-skills`; treat this tree as the **agent-skills** source of truth, not Kimi-only.
 
 ## Agent Principles (how to decide)
 
@@ -20,6 +20,7 @@ These override local “clever” defaults.
 |------|------|
 | `kimi-code/skills/` | Universal skills (live via `~/.kimi-code/skills` symlink) |
 | `agents/skills/` | Shared agent skills (e.g. webbridge) |
+| `claude/agents/` | Claude Code loop subagents (live via `~/.claude/agents` symlink); model/effort per role from `routing.py` |
 | `docs/github-loop.md` | **SSOT** for the GitHub label machine + unattended loop |
 | `skills-registry.yaml` | Install-plane contract (canonical path + symlink targets) |
 | `scripts/skillctl.py` | `apply` / `verify` / `doctor` |

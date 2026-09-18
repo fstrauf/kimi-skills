@@ -51,6 +51,9 @@ class DetectQuotaErrorTest(unittest.TestCase):
             "429 Too Many Requests",
             "402 Payment Required",
             "billing error: card declined",
+            "Claude AI usage limit reached|1757901600",
+            "5-hour limit reached ∙ resets 3pm",
+            "You've hit your limit · resets 11pm (Pacific/Auckland)",
         ):
             with self.subTest(line=line):
                 self.assertIsNotNone(agent_health.detect_quota_error(line + "\n"))

@@ -98,5 +98,85 @@ class LeftoversFormatTest(unittest.TestCase):
         self.assertIn("not Done", text)
 
 
+class HealUnlabeledScopedTest(unittest.TestCase):
+    scoped_body = (
+        "## Proposed Scope\n\nDo the thing.\n\n"
+        "## Depends on\n- #110 — schema first\n\n"
+        "## Acceptance Criteria\n\n- [ ] done\n"
+    )
+
+    def test_scoped_orphan_healed(self):
+        self.assertTrue(labels.should_heal_unlabeled_scoped(
+            issue(3, label_list=("enhancement", "priority/P1"), body=self.scoped_body)
+        ))
+
+    def test_raw_idea_skipped(self):
+        # Never scoped — no scoped sections — stays with scope-loop.
+        self.assertFalse(labels.should_heal_unlabeled_scoped(
+            issue(3, label_list=("enhancement",), body="Would be nice to have …")
+        ))
+
+    def test_every_queue_or_park_label_skipped(self):
+        for park in (
+            "ready", "agent-working", "agent-failed", "needs-input",
+            "blocked", "awaiting-merge", "scoping", "tracking",
+            "no-ai", "no-agent",
+        ):
+            self.assertFalse(
+                labels.should_heal_unlabeled_scoped(
+                    issue(3, label_list=("enhancement", park), body=self.scoped_body)
+                ),
+                park,
+            )
+
+    def test_epic_skipped(self):
+        self.assertFalse(labels.should_heal_unlabeled_scoped(
+            issue(3, title="[EPIC] thing", label_list=("enhancement",), body=self.scoped_body)
+        ))
+
+    def test_dep_section_alone_is_scoped(self):
+        body = "## Depends on\n- #110\n"
+        self.assertTrue(labels.should_heal_unlabeled_scoped(
+            issue(3, label_list=("bug",), body=body)
+        ))
+
+
+class StripClosedAwaitingTest(unittest.TestCase):
+    def test_strips_label(self):
+        calls = []
+
+        def fake_edit(repo, n, *args):
+            calls.append((n, args))
+
+        orig = labels._gh_edit
+        orig_json = labels._gh_json
+        labels._gh_edit = fake_edit
+        labels._gh_json = lambda *a: [{"number": 7}, {"number": 8}]
+        try:
+            self.assertEqual(labels.strip_closed_awaiting("o/r"), ["7", "8"])
+        finally:
+            labels._gh_edit = orig
+            labels._gh_json = orig_json
+        self.assertEqual(calls, [(7, ("--remove-label", "awaiting-merge")),
+                                 (8, ("--remove-label", "awaiting-merge"))])
+
+    def test_dry_run_does_not_edit(self):
+        calls = []
+
+        def fake_edit(repo, n, *args):
+            calls.append((n, args))
+
+        orig = labels._gh_edit
+        orig_json = labels._gh_json
+        labels._gh_edit = fake_edit
+        labels._gh_json = lambda *a: [{"number": 7}]
+        try:
+            self.assertEqual(labels.strip_closed_awaiting("o/r", apply=False), ["7"])
+        finally:
+            labels._gh_edit = orig
+            labels._gh_json = orig_json
+        self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

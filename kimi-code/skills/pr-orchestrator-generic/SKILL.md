@@ -3,8 +3,8 @@ name: pr-orchestrator-generic
 description: >-
   Orchestrate the full shipping loop for a GitHub issue in any repo — implement,
   open a draft PR, run thermonuclear review via PR comments, fix findings, run
-  pnpm test:all, and mark the PR ready for review. Works on both Kimi Code and
-  Grok Build. Use for /pr-orchestrator-generic, unattended Ready-column loops,
+  pnpm test:all, and mark the PR ready for review. Works on Kimi Code, Grok Build,
+  Ori, and Claude Code. Use for /pr-orchestrator-generic, unattended Ready-column loops,
   or when shipping a scoped issue end-to-end.
 when-to-use: >-
   Triggers on "/pr-orchestrator-generic", "/skill:pr-orchestrator-generic",
@@ -12,7 +12,7 @@ when-to-use: >-
 argument-hint: "<issue-number>"
 ---
 
-# PR Orchestrator (Generic) — Kimi + Grok
+# PR Orchestrator (Generic) — Kimi + Grok + Ori + Claude
 
 Drive a GitHub issue from assignment through implementation, automated thermonuclear review, test gating, and PR creation. The review handover happens on a GitHub draft PR so every finding and fix is traceable.
 
@@ -24,7 +24,7 @@ This is the **repo-agnostic** orchestrator. It assumes only:
 
 **Do not run live LLM eval suites in the automated loop** (`test:evals` / `#[ignore]` evals). They are multi-minute, flaky, and not part of CI. Humans can run `pnpm run test:evals` or full `pnpm test:all` before merge if desired.
 
-If a repo needs extra release gates (dev-stack setup, QA scripts, canary checks, real-user integrity), that belongs in a **repo-specific** skill or `AGENTS.md` — do **not** hardcode monorepo paths here. For call-analyzer / Days to Expiry use **`pr-orchestrator`** (dual-host thick overlay: UI gate + real-user QA).
+If a repo needs extra release gates (dev-stack setup, QA scripts, API contract validation, canary checks, real-user integrity), that belongs in a **repo-specific** skill or `AGENTS.md` — do **not** hardcode monorepo paths here. For call-analyzer / Days to Expiry use **`pr-orchestrator`** (dual-host thick overlay: UI gate + real-user QA).
 
 **Labels, queues, Depends-on vs park:** [docs/github-loop.md](../../../docs/github-loop.md) (repo root). Do not invent a second status machine.
 
@@ -32,28 +32,32 @@ If a repo needs extra release gates (dev-stack setup, QA scripts, canary checks,
 
 Detect which agent host you are on, then use **only** that host's tools for the rest of the run.
 
+**First:** `echo "$ORCH_HOST"`. The loop always sets it (`kimi|grok|ori|openrouter|claude`; treat `openrouter` as Ori). When set, it wins. Only sniff tools when it is empty (interactive run):
+
 | Signal | Host |
 |--------|------|
 | Tools named `run_terminal_command`, `spawn_subagent`, `todo_write`, `get_command_or_subagent_output` exist | **Grok** |
+| Tools named `Skill`, `ToolSearch`, `Agent` (with `subagent_type`), `Bash`, and **no** `CreateGoal` / `TodoList` | **Claude** |
 | Tools named `Bash`, `Agent`, `TodoList`, `TaskOutput`, `CreateGoal` exist | **Kimi** |
+| Tools named `bash`, `spawn_agent`, `wait_agent`, `read`, `write`, `edit`, `grep`, `glob`, `set_goal`, `update_goal` exist | **Ori** |
 | Unsure | Prefer the tools you actually have; never invent tool names from the other host |
 
-Write the host name into your working notes (`host: kimi` or `host: grok`) and stick to the matching column in the tool map below.
+Write the host name into your working notes (`host: kimi|grok|ori|claude`) and stick to the matching column in the tool map below.
 
 ## Tool map (use your host's column)
 
-| Purpose | Kimi | Grok |
-|---------|------|------|
-| Shell (git, gh, short commands) | `Bash` | `run_terminal_command` |
-| Long-running shell (`pnpm test:all`, servers) | `Bash` with `run_in_background: true`, `disable_timeout: true` | `run_terminal_command` with `background: true`, large/`0` `timeout` |
-| Wait on background work | `TaskOutput(block=true)` / wait on task id | `get_command_or_subagent_output` with `task_ids` + positive `timeout_ms` |
-| Stop background work | kill via shell / host stop API if available | `kill_command_or_subagent` |
-| Implementation / fix / review subagents | `Agent` (coder/reviewer) | `spawn_subagent` (`subagent_type: "general-purpose"`; prefer `isolation: "worktree"` for implementers) |
-| Progress tracking | `TodoList` | `todo_write` |
-| Goal / status (optional) | `CreateGoal` | `update_goal` (`message` / `completed` / `blocked_reason`) |
-| Read files | `Read` | `read_file` |
-| Search code | `Grep`, `Glob` | `grep`, `list_dir` |
-| Write small state files | shell redirect / write tools | `write` or shell via `run_terminal_command` |
+| Purpose | Kimi | Grok | Ori | Claude |
+|---------|------|------|-----|--------|
+| Shell (git, gh, short commands) | `Bash` | `run_terminal_command` | `bash` | `Bash` |
+| Long-running shell (`pnpm test:all`, servers) | `Bash` with `run_in_background: true`, `disable_timeout: true` | `run_terminal_command` with `background: true`, large/`0` `timeout` | Prefer `spawn_agent` + `wait_agent`; use `bash` with `timeoutMs` ≥ 3600000 only when no background agent is needed | `Bash` with `run_in_background: true` (max `timeout` 600000 for foreground) |
+| Wait on background work | `TaskOutput(block=true)` / wait on task id | `get_command_or_subagent_output` with `task_ids` + positive `timeout_ms` | `wait_agent` | Completion notification, or `TaskOutput` on the task id |
+| Stop background work | kill via shell / host stop API if available | `kill_command_or_subagent` | `stop_agent` | `TaskStop` |
+| Implementation / fix / review subagents | `Agent` (coder/reviewer) | `spawn_subagent` (`subagent_type: "general-purpose"`; prefer `isolation: "worktree"` for implementers) | `task` with `result_schema` for structured short work; `spawn_agent` + `wait_agent` for long work or progress monitoring | `Agent` with `subagent_type` = routed `agent` (`loop-implementer`, `loop-reviewer`, `loop-fixer`, `loop-explorer`, `loop-triage`) and `model` = routed `model` |
+| Progress tracking | `TodoList` | `todo_write` | `update_goal` / inline comments | `TodoWrite` (or task tools) |
+| Goal / status (optional) | `CreateGoal` | `update_goal` (`message` / `completed` / `blocked_reason`) | `set_goal` / `update_goal` | — (state markers only) |
+| Read files | `Read` | `read_file` | `read` | `Read` |
+| Search code | `Grep`, `Glob` | `grep`, `list_dir` | `grep`, `glob` | `Grep`, `Glob` (broad sweeps → `loop-explorer`) |
+| Write small state files | shell redirect / write tools | `write` or shell via `run_terminal_command` | `write` or `edit` or shell via `bash` | `Write` or shell redirect |
 
 **Rules:**
 
@@ -61,11 +65,49 @@ Write the host name into your working notes (`host: kimi` or `host: grok`) and s
 2. In non-interactive / unattended mode, always run long work (subagents, full test suites) in the background and wait explicitly.
 3. Orchestrator coordinates (git, gh, PR comments, scheduling subagents). Prefer subagents for code edits; the orchestrator may still run targeted tests and git/gh directly.
 
+## Cost routing (every host)
+
+The cheapest model and lowest effort that does the job. The policy table lives in **one** place, `routing.py` next to this skill (`$ORCH_ROUTING_TOOL`). Do not restate it or pick models by hand.
+
+Before **every** subagent spawn, ask for the route:
+
+```bash
+python3 "$ORCH_ROUTING_TOOL" route <role> --host "$ORCH_HOST" --size "${ORCH_SIZE:-M}" \
+  --attempt "${ORCH_ATTEMPT:-1}" [--review-iter <N>]
+# → tier=mid effort=medium model=sonnet agent=loop-implementer
+```
+
+(Interactive run without the loop env: `python3 ~/.kimi-code/skills/pr-orchestrator-generic/routing.py …`, where size comes from `routing.py size` on the issue body.)
+
+| Step | Role |
+|------|------|
+| Broad code search (Phase 1, finding files for briefs) | `explore` |
+| Phase 2 implementer | `implement` |
+| Phase 4 reviewer (pass `--review-iter N`) | `review` |
+| Review-finding fixes, targeted-test fixes, ship-gate fixes | `fix` |
+| Reading long test / build / CI logs | `triage` |
+
+Rules:
+
+- Use the returned `model` / `agent` exactly (Claude: `Agent(subagent_type=<agent>, model=<model>)`). Empty `model` → your host has no tier routing; spawn as usual and do not pass a model.
+- Escalation (the only path to the strongest model) is computed from `--attempt` / `--review-iter`. Never bump a model yourself because a task "feels hard".
+- The coordinator stays cheap. Don't read large files or raw logs yourself: send searches to `explore` and logs to `triage`. Shell work (tests, UI commands) is shell execution, not an LLM route.
+
+## Ori and OpenRouter execution policy
+
+Ori does not expose its in-process `task`/`spawn_agent` API to a shell child. The unattended shell loop therefore invokes an adapter through `ORCH_CLI`; `ORCH_AGENT=ori` supplies the conventional `ori` default, while installations using an OpenRouter adapter should set `ORCH_CLI` explicitly. The adapter must accept `-p <prompt>`, run in the supplied working directory, preserve the exit code, and forward `ORCH_MODEL` when set.
+
+`routing.py` returns tiers here too. Map `tier` onto the adapter's economical / mid / strongest route when it supports one.
+
+`ORCH_MODEL` is an optional hint, not a provider-specific CLI flag. This keeps OpenRouter Auto routing as the default and lets a local adapter map roles/models without coupling this skill to one API. Never silently retry a failed model route as another ticket; report quota failures and let the supervisor switch agents.
+
+For in-process Ori orchestration, prefer `task` with a `result_schema` for implementer/reviewer results. Use `spawn_agent` for long-running test gates and dev servers, then `wait_agent`; do not occupy the coordinator with a multi-hour foreground `bash` call.
+
 ## When to use
 
 - You have a GitHub issue to implement and ship in **any** repo that uses `pnpm test:all` (or documents an equivalent ship gate).
 - You want implement → draft PR → thermonuclear review → fix loop → tests → mark ready, automated.
-- Interactive or headless (`kimi -p` / `grok -p` / `loop-ready-issues.sh`).
+- Interactive or headless (`kimi -p` / `grok -p` / `claude -p` / `loop-ready-issues.sh`). Ori: use `spawn_agent` to invoke this skill as a subagent task.
 
 ## Invocation
 
@@ -75,8 +117,11 @@ Write the host name into your working notes (`host: kimi` or `host: grok`) and s
 # Kimi
 /skill:pr-orchestrator-generic <issue-number>
 
-# Grok
+# Grok / Claude Code
 /pr-orchestrator-generic <issue-number>
+
+# Ori
+Use `task` or `spawn_agent` with prompt containing this skill's instructions.
 ```
 
 **Headless (single issue)**
@@ -84,6 +129,9 @@ Write the host name into your working notes (`host: kimi` or `host: grok`) and s
 ```bash
 kimi -p "/skill:pr-orchestrator-generic <issue-number>" --output-format stream-json
 grok -p "/pr-orchestrator-generic <issue-number>" --always-approve
+claude -p "/pr-orchestrator-generic <issue-number>" --model sonnet --settings '{"effortLevel":"low"}' \
+  --permission-mode bypassPermissions --output-format stream-json --verbose
+# Ori: invoke via `spawn_agent` with prompt containing this skill.
 ```
 
 **Walk-away (scope then ship):**
@@ -109,16 +157,19 @@ Installed wrappers (via `~/.local/bin`, already on PATH):
 ```bash
 pr-loop --profile txApp --agent grok
 pr-loop --profile pageseeds-app --agent kimi
+pr-loop --profile any --agent ori
+pr-loop --profile coffee --agent claude        # cost-routed haiku/sonnet; opus only on escalation
 pr-loop --profile txApp --agent grok 3          # max 3 issues
 pr-loop --list-profiles
 
 # First time for a new product (auto-writes profiles/<name>.env if missing):
 pr-loop --profile my-app --repo-dir ~/code/my-app --project <N> --agent grok
+pr-loop --profile my-app --repo-dir ~/code/my-app --project <N> --agent ori
 # or only setup:
 pr-loop-setup my-app --repo-dir ~/code/my-app --project <N>
 ```
 
-Logs: `~/.kimi-code/pr-loop-<profile>/` or `~/.grok/pr-loop-<profile>/` (per profile). Locks are per-profile so two products can loop concurrently.
+Logs: `~/.kimi-code/pr-loop-<profile>/`, `~/.grok/pr-loop-<profile>/`, `~/.ori/pr-loop-<profile>/`, or `~/.claude/pr-loop-<profile>/` (per profile). Locks are per-profile so two products can loop concurrently.
 
 **Dirty tree between issues:** the loop auto-removes **untracked** debris (e.g. `packages/cli/node_modules` left after leaving a feature branch) when `ORCH_AUTO_CLEAN=1` (default). It never discards **tracked** modifications — those still abort the run. After each issue it returns the checkout to `main` so the next ticket starts clean.
 
@@ -155,7 +206,7 @@ These override any other instruction in this skill or any invoked skill:
 2. **No full test/build during review.** `pnpm test:all`, `pnpm build`, and similar full suites run only in the test gate, after the review loop passes.
 3. **No force-push or destructive commands.** Prefer plain `git push`. If rewrite is unavoidable, `--force-with-lease` only and explain why. **`gh stack push` / `gh stack merge` are allowed** — they use force-with-lease internally.
 4. **No data-modifying SQL** unless the repo's own orchestrator contract explicitly requires it and provides safe scripts. Default: never.
-5. **Orchestrator coordinates; subagents change code** when isolation is available (especially Grok worktrees).
+5. **Orchestrator coordinates; subagents change code** when isolation is available (especially Grok worktrees or Ori `spawn_agent`).
 6. **Never `gh pr merge` or push-land a stacked PR.** Use `gh stack merge` (or leave for a human). Push-land flattens the chain.
 
 ## GitHub Stacked PRs (mode A — stack-aware)
@@ -300,15 +351,38 @@ Optional host-specific extras (do not require them):
 
 - Kimi: `~/.kimi-code/tmp/`
 - Grok: `~/.grok/plugin-data/pr-orchestrator/`
+- Ori: (no default; use `scratch_dir` above)
 
 ## Workflow
+
+### Durable state and resume contract
+
+The supervisor may invoke this skill again against an existing PR. Do not create a second branch or PR when `ORCH_RESUME_PR` is set; reuse `ORCH_RESUME_HEAD` and continue from `ORCH_RESUME_PHASE`.
+
+The supervisor provides `ORCH_STATE_TOOL`, `ORCH_STATE_ISSUE_N`, and optionally `ORCH_STATE_PR_N`. At every phase boundary append a state marker:
+
+```bash
+state_target="${ORCH_STATE_PR_N:-$ORCH_STATE_ISSUE_N}"
+state_kind="${ORCH_STATE_PR_N:+pr}"
+state_kind="${state_kind:-issue}"
+REPO_MATCH="${REPO_MATCH:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}" \
+  python3 "$ORCH_STATE_TOOL" "append-$state_kind" "$state_target" \
+  phase=<phase> status=<ok|failed|blocked|needs_input> attempt=<attempt> next=<phase> pr="${ORCH_STATE_PR_N:-0}"
+```
+
+Required semantics:
+
+- `status=failed` or `status=blocked` preserves the next resume phase and exits nonzero unless this is an explicit `needs-input` decision.
+- `status=needs_input` is the only non-error zero-exit park.
+- The final successful phase MUST append `phase=ready status=ok next=ready` after every required gate passes and after `gh pr ready` succeeds.
+- Never claim success, mark an issue `awaiting-merge`, or leave a draft PR as if complete without that final marker. A draft PR with no final marker is resumable work.
 
 ### Phase 0 — Lock context
 
 1. Read the skill argument for the issue number. If missing, ask once and stop if still missing.
-2. Optional goal: set objective  
-   `Implement GitHub issue #<number>, run the thermonuclear review loop until clean, run pnpm test:all, and mark the PR ready for review`  
-   (Kimi: `CreateGoal` · Grok: `update_goal` with `message`).
+2. Optional goal: set objective
+   `Implement GitHub issue #<number>, run the thermonuclear review loop until clean, run pnpm test:all, and mark the PR ready for review`
+   (Kimi: `CreateGoal` · Grok: `update_goal` with `message` · Ori: `set_goal`).
 3. Shell: `git branch --show-current`.
 4. Shell: `gh auth status` (or equivalent). If not authenticated, stop and report.
 5. Detect stack CLI + mode (see **GitHub Stacked PRs** above): `STACK_CLI`, `ORCH_STACK`.
@@ -318,7 +392,7 @@ Optional host-specific extras (do not require them):
 9. If on `main` or `master`, create the feature branch:
    - **Stack path** (`ORCH_STACK=1` and `STACK_CLI=1`): `gh stack init "feature/<issue-number>-<slug>"`
    - **Classic path** (default / auto): `git fetch origin "$BASE" && git checkout -b feature/<issue-number>-<slug> "origin/$BASE"`
-10. Create todos (Kimi: `TodoList` · Grok: `todo_write`, merge false on first create):
+10. Create todos (Kimi: `TodoList` · Grok: `todo_write`, merge false on first create · Ori: track via comments / `update_goal`):
    - Understand issue
    - Implement
    - React control scan
@@ -331,8 +405,8 @@ Optional host-specific extras (do not require them):
 
 1. Read the issue title and body carefully.
 2. Read `AGENTS.md` / `Agents.md` and project docs it references.
-3. Search the codebase for relevant files (host search tools).
-4. If the body is ambiguous, make a reasonable interpretation from `AGENTS.md` and proceed. Park `needs-input` **only** for a product / legal / budget decision a human must make:
+3. Search the codebase for relevant files (host search tools; for broad sweeps use a role `explore` subagent).
+4. If the body is ambiguous, make a reasonable interpretation from `AGENTS.md` and proceed. If the issue contains `## API contract` with `API change: yes`, treat its OpenAPI file and contract delta as part of the implementation scope; this supplements the rest of the issue and does not replace normal acceptance criteria. Park `needs-input` **only** for a product / legal / budget decision a human must make:
    ```bash
    gh issue edit <N> --add-label needs-input --remove-label ready
    gh issue comment <N> --body "needs-input: <the question>"
@@ -342,15 +416,20 @@ Optional host-specific extras (do not require them):
 
 ### Phase 2 — Implement
 
-1. Spawn an **implementer subagent** with a complete brief:
-   - Issue number, title, body
-   - Relevant file paths
-   - Follow `AGENTS.md`; minimal scoped changes
-   - Targeted tests only if needed; **do not** run `pnpm test:all` / full build
-   - Return summary of changes, commit SHAs if any, open questions
+1. Spawn an **implementer subagent** (role `implement`, see *Cost routing*) with a complete brief:
+    - Issue number, title, body
+    - Relevant file paths
+    - Follow `AGENTS.md`; minimal scoped changes
+    - If the issue declares `API change: yes`, update the named OpenAPI file and implementation together; preserve the declared compatibility behavior
+    - Targeted tests only if needed; **do not** run `pnpm test:all` / full build
+    - Return summary of changes, commit SHAs if any, open questions
 
-   **Kimi:** `Agent` coder; non-interactive → background + `TaskOutput(block=true)`.  
+   **Kimi:** `Agent` coder; non-interactive → background + `TaskOutput(block=true)`.
    **Grok:** `spawn_subagent` with `subagent_type: "general-purpose"`, prefer `isolation: "worktree"`, `background: true`; wait with `get_command_or_subagent_output` (large `timeout_ms`, e.g. 1800000). If a worktree was used, fetch its HEAD onto the feature branch in the main repo before continuing (same idea as execute-plan worktree protocol).
+   **Ori:** prefer `task` with this result shape when the work is short and bounded:
+   `{ "status": "ok|needs-input|failed", "summary": "...", "changed_files": [], "commits": [], "tests": [] }`.
+   Use `spawn_agent` with a detailed brief for long work or when progress monitoring is useful; wait with `wait_agent`. Pass `model` only as a routing hint when explicitly configured; otherwise retain OpenRouter Auto.
+   **Claude:** `Agent` with `subagent_type` / `model` from the route, `run_in_background: true`; continue when the completion notification arrives.
 
 2. Inspect:
    - `git status --short`
@@ -358,7 +437,7 @@ Optional host-specific extras (do not require them):
    - Prefer `git diff --name-only origin/main...HEAD` (or `origin/master...HEAD`) when the branch has commits
 3. If there are no changes, stop and report that the implementer produced no diff.
 4. Run any targeted tests the subagent skipped (commands from `AGENTS.md`).
-5. If those fail, spawn a fix subagent (or resume the implementer) before continuing.
+5. If those fail, spawn a fix subagent (role `fix`; hand long failure output to role `triage` first) before continuing.
 6. Ensure a commit exists, e.g. `feat: <issue title> (closes #N)`.
 7. Mark "Implement" done.
 
@@ -377,7 +456,9 @@ for name in react-doctor shadscan; do
   for p in \
     "$HOME/.kimi-code/skills/$name/SKILL.md" \
     "$HOME/.grok/skills/$name/SKILL.md" \
-    "$HOME/.agents/skills/$name/SKILL.md"; do
+    "$HOME/.agents/skills/$name/SKILL.md" \
+    "$HOME/.ori/skills/$name/SKILL.md" \
+    "$HOME/.claude/skills/$name/SKILL.md"; do
     if [ -f "$p" ]; then echo "$name $p"; break; fi
   done
 done
@@ -420,7 +501,10 @@ EOF
 
 ```bash
 git push -u origin <branch>
-# When ORCH_BASE_BRANCH is set (stacked on an unmerged dep PR), target it:
+# ORCH_BASE_BRANCH is always set by loop-issue-worker.sh — stacked on an
+# unmerged dep PR, a profile's opt-in ORCH_BASE_BRANCH_DEFAULT (e.g. a
+# product that integrates on `dev` instead of the repo's real default
+# branch), or the repo's actual default branch as the final fallback:
 #   gh pr create --draft --base "$ORCH_BASE_BRANCH" ...
 gh pr create --draft \
   ${ORCH_BASE_BRANCH:+--base "$ORCH_BASE_BRANCH"} \
@@ -454,14 +538,16 @@ EOF
 
 **Review baseline (once, before iteration 1):**
 
-1. Resolve absolute path to `thermo-nuclear-code-quality-review` `SKILL.md`. Probe in order; use first readable:
+1. Resolve absolute path to `thermo-nuclear-code-quality-review` `SKILL.md` with `resolve_skill_path thermo-nuclear-code-quality-review` (or the equivalent helper). Use the first readable candidate:
 
 ```bash
 for p in \
   "$HOME/.kimi-code/skills/thermo-nuclear-code-quality-review/SKILL.md" \
   "$HOME/.grok/skills/thermo-nuclear-code-quality-review/SKILL.md" \
   "$HOME/.grok/bundled/skills/thermo-nuclear-code-quality-review/SKILL.md" \
-  "$HOME/.agents/skills/thermo-nuclear-code-quality-review/SKILL.md"; do
+  "$HOME/.agents/skills/thermo-nuclear-code-quality-review/SKILL.md" \
+  "$HOME/.ori/skills/thermo-nuclear-code-quality-review/SKILL.md" \
+  "$HOME/.claude/skills/thermo-nuclear-code-quality-review/SKILL.md"; do
   if [ -f "$p" ]; then echo "$p"; break; fi
 done
 ```
@@ -494,7 +580,7 @@ WHILE true:
        git diff --name-only "origin/${ORCH_BASE_BRANCH:-main}...HEAD" 2>/dev/null \
          || git diff --name-only origin/master...HEAD \
          || git diff --name-only HEAD~1
-  5. Spawn reviewer subagent (prompt below), background, wait for completion
+  5. Spawn reviewer subagent (role `review`, `--review-iter N`; prompt below), background, wait for completion
   6. Parse BASELINE + VERDICT
   7. If VERDICT == PASS:
        - Post passing PR comment
@@ -502,13 +588,17 @@ WHILE true:
   8. If VERDICT == FAIL:
        - If N == 3: STOP, post findings, do not spawn fix, report
        - Else: post findings with marker <!-- thermonuclear-review-iter-N -->
-       - Spawn/resume implementer to fix only those findings; commit + push
+       - Spawn a fixer (role `fix`) for only those findings; commit + push
        - If same substantive finding repeats across consecutive iterations, STOP
        - N = N+1; write N to <iter_file>
   9. Missing BASELINE: loaded or unparseable VERDICT → STOP (invalid review)
 ```
 
 **Reviewer subagent prompt:**
+
+For Ori, request a structured result with `result_schema` when using `task`:
+`{ "baseline": "loaded|missing", "verdict": "PASS|FAIL", "findings": [{ "path": "...", "issue": "...", "suggested_fix": "..." }], "notes": [] }`.
+The textual format below remains the interchange format for Kimi/Grok/Claude and for shell adapters. The reviewer model comes from `routing.py route review`. Never hard-code a provider model.
 
 ```
 Run a thermo-nuclear code quality review on the current branch changes for draft PR #<pr_number>.
@@ -585,7 +675,8 @@ Mark "Review loop" done on PASS.
 
 1. Mark "Test gate" in progress.
 2. Check `AGENTS.md` for prerequisites (services, env, seed data). Run documented setup first; teardown after if documented.
-3. **Resolve the ship-gate command** (first match wins):
+3. If the issue declares `API change: yes`, resolve the named contract validation command from `AGENTS.md` or the product docs. Run it as part of this gate, or report that the repository has no documented API contract check; do not invent a new validation framework in the generic orchestrator.
+4. **Resolve the ship-gate command** (first match wins):
 
    ```bash
    # 1) Explicit automated gate
@@ -608,15 +699,18 @@ Mark "Review loop" done on PASS.
    pnpm test:all   # only if the above scripts do not exist
    ```
 
+   If the issue declares `API change: yes`, append the repository's documented API contract validation command when it is not already included in the resolved gate. The OpenAPI check is additive; it does not replace lint, typecheck, tests, build, or the repository's other acceptance checks.
+
    **Hard rule:** do **not** invoke `pnpm run test:evals` or `cargo test … -- --ignored` live-eval filters in this phase unless the user explicitly set `ORCH_RUN_EVALS=1` in the environment.
 
-4. **Run the resolved command** as a **background** shell task (full suites exceed foreground timeouts). Wait until completion.
-5. If pass: `gh pr comment <pr_number> --body "✅ Ship gate passed: \`<exact command>\`."`
-6. If fail:
+5. **Run the resolved command** as a **background** shell task (full suites exceed foreground timeouts). Wait until completion.
+6. If pass: `gh pr comment <pr_number> --body "✅ Ship gate passed: \`<exact command>\`."`
+7. If fail:
+
    - Classify: product failure vs flake (eval timeout, network, corrupted cargo index).
    - Product: post summary, spawn fix subagent, re-run gate once more (**max 2 total attempts**).
    - Flake only (rare with evals skipped): re-run gate once with no code change; if still fail, stop and report.
-7. Mark "Test gate" done.
+ 8. Mark "Test gate" done.
 
 **Why this is faster:** On PageSeeds, `pnpm test:all` = rust + **live LLM evals** + lint + tsc + vitest + checks + full vite build. Live evals alone often take 10–30+ minutes and flake (wrong LLM categories), forcing full-suite retries. CI only runs ~4 minutes of rust + lint/typecheck; the loop should track that, not paid LLM regression suites.
 
@@ -634,7 +728,7 @@ This PR is ready for review.
 ```
 
 4. Report PR URL to the user.
-5. Mark all todos done. Optional: complete the goal (Kimi goal done · Grok `update_goal` with `completed: true`).
+5. Mark all todos done. Optional: complete the goal (Kimi goal done · Grok `update_goal` with `completed: true` · Ori `update_goal` with `completed: true`).
 6. If you created worktrees, clean them up when the host supports it (e.g. `grok worktree rm --force <path>`).
 
 ## Safety rules
@@ -645,7 +739,7 @@ This PR is ready for review.
 - If the issue needs a human decision (product/legal/budget only), `+needs-input` and exit 0. Do not abort the fleet.
 - If the review loop or test gate gets stuck, stop and report current state rather than looping forever.
 - Respect project-specific test commands from `AGENTS.md`.
-- Prefer worktree-isolated implementers when the host supports them so the main workspace stays clean.
+- Prefer worktree-isolated implementers when the host supports them so the main workspace stays clean (Ori supports `spawn_agent` for isolation).
 
 ## Output expectations
 
@@ -656,7 +750,7 @@ At the end of a successful run, report:
 - PR URL
 - Number of review iterations and final verdict
 - Test result (`pnpm test:all` or project equivalent)
-- Host used (`kimi` or `grok`)
+- Host used (`kimi` or `grok` or `ori`)
 - Note that the PR is ready for review
 - Reminder: manual QA is still required before approving
 
@@ -669,7 +763,7 @@ At the end of a successful run, report:
 | `shadscan` | Phase 2.5 shadcn/ui scan when official shadcn is present. Same pattern. |
 | `thermo-nuclear-code-quality-review` | Review baseline loaded via read-file into reviewer subagents |
 | `ship-loop` (PATH) | Walk-away: scope then ship; `--ask` prints leftovers |
-| `pr-loop` (PATH) / `loop-ready-issues.sh` | Unattended Ready-column runner; **`--profile NAME`** + `--agent kimi\|grok` |
+| `pr-loop` (PATH) / `loop-ready-issues.sh` | Unattended Ready-column runner; **`--profile NAME`** + `--agent kimi\|grok\|ori` |
 | `pr-loop-setup` (PATH) / `setup-profile.sh` | Create/refresh `profiles/<name>.env` |
 | `profiles/*.env` | Per-product board/repo config **shared with scope-loop** (txApp, pageseeds-app, …) |
 | `scope-loop` (PATH) / `scope-all.sh` | Unattended Scoping-column runner; same `--profile NAME` as pr-loop |

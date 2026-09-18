@@ -91,13 +91,13 @@ SCRIPT_DIR=${LOOP_SELF_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 
 usage() {
   cat <<'EOF'
-Usage: loop-ready-issues.sh --profile NAME [--agent kimi|grok] [options] [max-issues]
+Usage: loop-ready-issues.sh --profile NAME [--agent kimi|grok|ori|openrouter|claude] [options] [max-issues]
 
 Required:
   --profile NAME      Load profiles/NAME.env (auto-setup if missing)
 
 Optional:
-  --agent kimi|grok   Which CLI runs the orchestrator (default: kimi, or $ORCH_AGENT)
+  --agent kimi|grok|ori|openrouter|claude Which CLI/wrapper runs the orchestrator (default: kimi, or $ORCH_AGENT)
   --repo-dir PATH     Checkout path (passed to setup-profile if creating; overrides REPO_DIR after load if set before source… use for first-time setup)
   --project N         Project board number (first-time setup only)
   --owner OWNER       Project owner (default @me; first-time setup)
@@ -105,10 +105,13 @@ Optional:
   max-issues          Stop after N issues (0 = no limit, default 0)
 
 Environment:
-  ORCH_AGENT          kimi | grok (same as --agent)
+  ORCH_AGENT          kimi | grok | ori | openrouter | claude (same as --agent)
+  ORCH_MAX_TIER       cheap | mid | strong — cost-routing ceiling (routing.py; claude only)
+  ORCH_ROUTE_<ROLE>   tier:effort pin for one role, e.g. ORCH_ROUTE_REVIEW=mid:high
   ORCH_SKILL          Skill prompt prefix (default depends on agent)
   ORCH_CLI            Override CLI binary name
-  ORCH_CLI_ARGS       Extra CLI args (grok default: --always-approve)
+  ORCH_CLI_ARGS       Extra CLI args (grok default: --always-approve; Ori is empty)
+  ORCH_MODEL          Optional OpenRouter model hint passed to an Ori wrapper
   LOG_DIR             Per-issue log directory
   REPO_DIR            Working tree (also set by profile)
   MENTION_USER        GitHub login for @mentions (default: gh api user)
@@ -166,7 +169,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --agent)
-      [ $# -ge 2 ] || { echo "ABORT: --agent requires kimi or grok" >&2; exit 1; }
+      [ $# -ge 2 ] || { echo "ABORT: --agent requires kimi, grok, ori, or openrouter" >&2; exit 1; }
       ORCH_AGENT="$2"
       shift 2
       ;;
@@ -282,7 +285,7 @@ WORKER_SRC="$SCRIPT_DIR/loop-issue-worker.sh"
 CONSECUTIVE_FAILURE_LIMIT="${ORCH_MAX_FAILURES:-0}"
 
 export REPO_DIR LOG_DIR HEARTBEAT_SECONDS MENTION_USER
-export ORCH_AGENT ORCH_CLI ORCH_SKILL ORCH_CLI_ARGS
+export ORCH_AGENT ORCH_CLI ORCH_SKILL ORCH_CLI_ARGS ORCH_MODEL
 export LOOP_COMMON="$SCRIPT_DIR/loop-common.sh"
 export REPO PROJECT_NUMBER PROJECT_OWNER PROJECT_ID
 export STATUS_FIELD_ID OPT_READY OPT_IN_PROGRESS OPT_IN_REVIEW
@@ -339,6 +342,8 @@ log "Repo:    $REPO  |  checkout $REPO_DIR"
 # Historical bug: triage label alone was neither scoped nor shipped.
 promote_triage_ready_orphans log
 heal_false_dependency_blocks log
+heal_unlabeled_scoped_orphans log
+strip_closed_awaiting_merge log
 # REST-only recovery: issues stuck on agent-working after a hard kill get
 # re-queued (no PR) or parked as awaiting-merge (open PR).
 recover_stuck_agent_working
@@ -351,6 +356,7 @@ log "Stack:   ensure=${ORCH_STACK_ENSURE:-1} mode=${ORCH_STACK:-auto} cli=${ORCH
 log "You:     gh issue edit N --add-label ready   # enqueue"
 log "         gh issue edit N --remove-label agent-failed --add-label ready  # retry"
 log "         (triage:ready-to-implement alone is auto-healed to ready on loop start)"
+log "         (scoped issues that lost every ship/park label are auto-healed to ready on loop start)"
 log "Skips:   Epic: titles, agent-failed/blocked/agent-working, open Closes #N PR"
 log "Agent:   $ORCH_AGENT ($ORCH_CLI -p \"$ORCH_SKILL <N>\"${ORCH_CLI_ARGS:+ $ORCH_CLI_ARGS})"
 log "Logs:    $LOG_DIR"

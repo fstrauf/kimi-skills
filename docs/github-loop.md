@@ -20,7 +20,7 @@ pr-loop               label ready, topo-sorted by ## Depends on
         │
         ├─ land + close
         ├─ awaiting-merge   (PR open / stacked; dependents stack onto the branch)
-        └─ agent-failed     (mechanical fail — re-add ready to retry)
+        └─ agent-failed     (mechanical fail — auto-resumes the draft PR, or re-add ready to restart)
 
 hygiene               needs-input / dupes / healed  (gh-ticket-hygiene)
 ```
@@ -39,8 +39,8 @@ One ship label: **`ready`**. Everything else is metadata or a park.
 | `needs-input` | scope or implementer | Human must answer (product / legal / budget) | park |
 | `blocked` | scope / human | **External** stop only (vendor, legal hold). Rare. | park |
 | `agent-working` | pr-loop worker | Claimed by a live run | land / park / fail |
-| `agent-failed` | pr-loop worker | Mechanical failure (crash, tests, review FAIL×3) | human: `-agent-failed +ready` |
-| `awaiting-merge` | pr-loop worker | PR open; merge pending | stack through / human `gh stack merge` |
+| `agent-failed` | pr-loop worker | Mechanical failure (crash, tests, review FAIL×3). **Resumable when a draft PR exists**: the worker re-queues it (`+ready`) and the next run reuses the PR branch, continuing from the `ship-loop-state` phase recorded on the PR (attempt-capped, default 3). Without a PR it needs a human: `-agent-failed +ready`. | auto-resume / human |
+| `awaiting-merge` | pr-loop worker | PR open; merge pending | stack through / human `gh stack merge`. Stripped from closed issues at loop start |
 | `triage:ready-to-implement` | triage | Metadata only. Loop heals orphans → `+ready` | — |
 
 Skip titles `Epic:` / `[Epic]`. Epics are never scoped or shipped.
@@ -52,6 +52,18 @@ Skip titles `Epic:` / `[Epic]`. Epics are never scoped or shipped.
 - `needs-input` because the agent is merely unsure — make a reasonable call from the product `AGENTS.md`, or ask only when a human *decision* is required
 - Adding `ready` to an epic or a delete-candidate
 - Driving status via GitHub Projects
+
+## Resume & durable ship state
+
+The loop is **resumable**, not just retryable. The work-in-progress is the PR branch, and the phase is recorded on the PR/issue comment as a machine-readable marker:
+
+```
+<!-- ship-loop-state phase=<understand|implement|review|test_gate|ui_gate|qa_gate|ready> status=<ok|failed|blocked|needs_input> attempt=<N> next=<phase> pr=<PR number> -->
+```
+
+- A **draft PR** is an incomplete ship unit. `pr-loop` treats `agent-failed` + draft PR as a **resume candidate**: the next run reuses the PR branch (`feature/<N>-loop`) and continues from the recorded `next` phase — implementation, review findings, and test run all carry over. No second branch/PR is created.
+- A **completion marker** (`phase=ready status=ok`) on the PR is the ONLY thing that makes the worker proceed to `awaiting-merge`/land. Exiting 0, a draft PR, skipped gates, or a bare non-draft PR are never sufficient.
+- Attempts are counted deterministically by the worker (`attempt` on the PR). After `ORCH_RESUME_MAX_ATTEMPTS` (default 3) consecutive failures the issue stays `agent-failed` and needs a human (or a fresh `+ready` after the blocker is removed).
 
 ## Dependencies vs park
 
@@ -116,6 +128,7 @@ Profiles live in `kimi-code/skills/pr-orchestrator-generic/profiles/<name>.env` 
 ship-loop --profile coffee --agent grok   # scope then ship (walk-away)
 scope-loop --profile coffee --agent grok  # scope only
 pr-loop --profile coffee --agent grok     # ship only
+ship-loop --profile coffee --agent claude # Claude Code, cost-routed (see Cost routing)
 ship-loop --profile coffee --ask          # print parked leftovers
 pr-loop --list-profiles
 
@@ -133,7 +146,23 @@ gh issue edit N --repo OWNER/REPO --remove-label agent-failed --add-label ready
 | `pr-loop` | `loop-ready-issues.sh` + worker | `ready`, topo-sorted |
 | `pr-loop-setup` | `setup-profile.sh` | write `profiles/<name>.env` |
 
-Logs: `~/.kimi-code/pr-loop-<profile>/` or `~/.grok/pr-loop-<profile>/`. Locks are per-profile. Each issue runs in `$REPO_DIR/.worktrees/issue-N` so a dirty main checkout cannot abort the fleet.
+Logs: `~/.kimi-code/pr-loop-<profile>/`, `~/.grok/pr-loop-<profile>/` or `~/.claude/pr-loop-<profile>/`. Locks are per-profile. Each issue runs in `$REPO_DIR/.worktrees/issue-N` so a dirty main checkout cannot abort the fleet.
+
+## Cost routing
+
+Every LLM step runs on the **cheapest model tier and lowest effort that does the job**. On subscriptions, cost means quota, so the strong tier (Opus on Claude) is used as little as possible. The policy table has one home: [`routing.py`](../kimi-code/skills/pr-orchestrator-generic/routing.py). Don't copy it here or into skills.
+
+| Input | Source |
+|-------|--------|
+| **Role** | Named by the skill at each step: `coordinate`, `scope`, `explore`, `implement`, `review`, `fix`, `triage` |
+| **Size** | `## Estimate` → `Size: S\|M\|L`, written by gh-scope-issue (missing → `M`) |
+| **Attempt** | Worker: failed runs on the PR + 1 (from `ship-loop-state`) |
+| **Review iteration** | Orchestrator Phase 4 |
+
+- Default routes never reach the strong tier. Mechanical and search work goes to cheap subagents (`explore`, `triage`); the coordinator session stays on a low-effort mid or cheap tier.
+- **Escalation is the only path up.** Attempt 2 moves `implement`/`fix`/`review` up one step. Attempt ≥ 3, or an L issue on review iteration 3, unlocks the strong tier for that role only.
+- Knobs (profile or env): `ORCH_MAX_TIER=mid` bans the strong tier entirely; `ORCH_ROUTE_<ROLE>=tier:effort` pins one role.
+- Hosts: `claude` maps tiers to `haiku`/`sonnet`/`opus` (session via `--model` + `--settings effortLevel`; subagents via `claude/agents/loop-*.md` + the Agent `model` override). kimi/grok/ori run one model, so routing is a no-op for them.
 
 ## Who does what
 
@@ -156,7 +185,10 @@ Logs: `~/.kimi-code/pr-loop-<profile>/` or `~/.grok/pr-loop-<profile>/`. Locks a
 | `needs-input` drain | `ship-loop --ask` lists parked questions. Answer on the issue, then `-needs-input +ready`. |
 | Scope then ship | `ship-loop --profile NAME` |
 | Land blocked (shim / husky / stack) | `awaiting-merge`; leftovers print `gh stack merge <top-pr> --yes --squash` |
+| Orchestrator exits 0 with no PR | Never `awaiting-merge` — that park promises dependents a branch to stack on. `agent-failed`, same as the auto-merge path. |
+| Scoped issue lost every ship/park label | Loop-start heal restores `ready` (scoped body shape proves pipeline provenance; dependency deferral still applies). Raw unscoped ideas stay label-less for scope-loop. |
 | Dirty main checkout | Issue runs in a worktree. Tracked edits on main are left untouched. |
+| Model choice | Never by hand. Skills ask `routing.py` per role (see Cost routing). Retries escalate; first runs don't. |
 | Agent quota / rate-limit exhausted | Abort the whole run (exit 44), print switch-agent guidance. Current issue goes back to `ready` (pr-loop) / keeps `scoping` (scope-loop) — never `agent-failed`. Signatures: `agent_health.py`. |
 | Agent wedged on exit (log frozen) | The CLI is expected to exit when its run finishes. A live process with a log untouched for `ORCH_AGENT_STALE_MINUTES` (default 15) **and an idle process tree** is a wedged agent (child servers holding its output pipes). The worker kills the whole process tree and judges the run by work product: an open PR → completed run (normal result flow); no PR → `agent-failed`. A frozen log with a CPU-burning tree is a long silent phase (delegated subagent, cold build) — the worker heartbeats into the log and keeps waiting, never kills. Detectors: `agent_health.py stale-check` + `tree-busy`. |
 

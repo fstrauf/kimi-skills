@@ -116,7 +116,12 @@ list_loop_profiles() {
 # Which agent CLI runs the orchestrator skill for each issue.
 #   kimi  → kimi -p "/skill:pr-orchestrator-generic <N>"
 #   grok  → grok -p "/pr-orchestrator-generic <N>" --always-approve
-# The generic skill is dual-host (Kimi + Grok tool map). Override skill text
+#   ori   → ori -p "/pr-orchestrator-generic <N>" (legacy Ori harness)
+#   openrouter → opencode run --model openrouter/openrouter/auto --auto <prompt>
+#   claude → claude -p "/pr-orchestrator-generic <N>" --permission-mode bypassPermissions
+#            --output-format stream-json --verbose  (+ --model/effort from routing.py)
+# ORCH_HOST names the host for skills (tool map + cost routing); no tool sniffing.
+# The generic skill is multi-host (per-host tool map). Override skill text
 # with ORCH_SKILL only if you intentionally want another skill (e.g. the
 # call-analyzer-specific Grok /pr-orchestrator).
 
@@ -149,7 +154,7 @@ resolve_orch_agent() {
     [ "$_ORCH_USER_CLI_ARGS" = 0 ] && unset ORCH_CLI_ARGS
     if [ "$_ORCH_USER_LOG_DIR" = 0 ]; then
       case "${LOG_DIR:-}" in
-        "$HOME/.kimi-code/pr-loop"|"$HOME/.grok/pr-loop"|"$HOME/.kimi-code/pr-loop-"*|"$HOME/.grok/pr-loop-"*|"") unset LOG_DIR ;;
+        "$HOME/.kimi-code/pr-loop"|"$HOME/.grok/pr-loop"|"$HOME/.claude/pr-loop"|"$HOME/.kimi-code/pr-loop-"*|"$HOME/.grok/pr-loop-"*|"$HOME/.claude/pr-loop-"*|"") unset LOG_DIR ;;
       esac
     fi
   fi
@@ -177,11 +182,36 @@ resolve_orch_agent() {
       : "${ORCH_CLI_ARGS:=--always-approve}"
       : "${LOG_DIR:=$HOME/.grok/pr-loop${log_suffix}}"
       ;;
+    ori|Ori|ORI)
+      ORCH_AGENT=ori
+      ORCH_CLI="${ORCH_CLI:-ori}"
+      ORCH_SKILL="${ORCH_SKILL:-/pr-orchestrator-generic}"
+      : "${ORCH_CLI_ARGS:=}"
+      : "${LOG_DIR:=$HOME/.ori/pr-loop${log_suffix}}"
+      ;;
+    openrouter|OpenRouter|OPENROUTER|opencode|OpenCode|OPENCODE)
+      ORCH_AGENT=openrouter
+      ORCH_CLI="${ORCH_CLI:-$HOME/.local/bin/pr-loop-openrouter}"
+      ORCH_SKILL="${ORCH_SKILL:-/pr-orchestrator-generic}"
+      : "${ORCH_CLI_ARGS:=}"
+      : "${ORCH_MODEL:=openrouter/openrouter/auto}"
+      : "${LOG_DIR:=$HOME/.openrouter/pr-loop${log_suffix}}"
+      ;;
+    claude|Claude|CLAUDE)
+      ORCH_AGENT=claude
+      ORCH_CLI="${ORCH_CLI:-claude}"
+      ORCH_SKILL="${ORCH_SKILL:-/pr-orchestrator-generic}"
+      # Unattended + streaming (a silent text-mode log would trip the stale watchdog).
+      : "${ORCH_CLI_ARGS:=--permission-mode bypassPermissions --output-format stream-json --verbose}"
+      : "${LOG_DIR:=$HOME/.claude/pr-loop${log_suffix}}"
+      ;;
     *)
-      echo "[$(date '+%H:%M:%S')] ABORT: Unknown ORCH_AGENT='$ORCH_AGENT' (use kimi or grok)" >&2
+      echo "[$(date '+%H:%M:%S')] ABORT: Unknown ORCH_AGENT='$ORCH_AGENT' (use kimi, grok, ori, openrouter, or claude)" >&2
       exit 1
       ;;
   esac
+  ORCH_HOST="$ORCH_AGENT"
+  export ORCH_HOST
   mkdir -p "$LOG_DIR"
 }
 
@@ -192,9 +222,23 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 die() { log "ABORT: $*"; exit 1; }
 
 # Human-readable orchestrator invocation for logs.
-orch_cmd_display() { # <issue-number>
+orch_cmd_display() { # <issue-number> [resume-phase] [resume-attempt]
   local issue=$1
-  echo "$ORCH_CLI -p \"$ORCH_SKILL $issue\"${ORCH_CLI_ARGS:+ $ORCH_CLI_ARGS}"
+  local resume_phase=${2:-}
+  local resume_attempt=${3:-}
+  local cmd="$ORCH_CLI -p \"$ORCH_SKILL $issue"
+  if [ -n "$resume_phase" ]; then
+    cmd+=" --resume-phase $resume_phase"
+  fi
+  if [ -n "$resume_attempt" ]; then
+    cmd+=" --resume-attempt $resume_attempt"
+  fi
+  cmd+="\""
+  if [ "${ORCH_AGENT:-}" = "openrouter" ]; then
+    echo "$cmd${ORCH_CLI_ARGS:+ $ORCH_CLI_ARGS} (model=${ORCH_MODEL:-openrouter/openrouter/auto})"
+  else
+    echo "$cmd${ORCH_CLI_ARGS:+ $ORCH_CLI_ARGS}"
+  fi
 }
 
 # Porcelain minus loop worktrees (those are isolated checkouts, not dirt).
@@ -516,6 +560,12 @@ _agent_health_py() {
   echo "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent_health.py"
 }
 
+# Resolve an installed skill through one canonical host search order.
+resolve_skill_path() {
+  [ -n "${1:-}" ] || return 1
+  python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/skill_paths.py" "$1"
+}
+
 # True if the agent log tail shows a quota / rate-limit exhaustion signature.
 agent_log_hit_quota() { # <agent-log-file>
   [ -n "${1:-}" ] && [ -f "$1" ] || return 1
@@ -569,8 +619,10 @@ print_quota_abort_guidance() { # <issue> <agent-log-file>
   local issue=$1 logfile=$2 line other profile_args=""
   line=$(agent_quota_error_line "$logfile")
   case "${ORCH_AGENT:-kimi}" in
-    grok) other=kimi ;;
-    *)    other=grok ;;
+    grok)   other=claude ;;
+    ori)    other=kimi ;;
+    claude) other=grok ;;
+    *)      other=claude ;;
   esac
   [ -n "${LOOP_PROFILE:-}" ] && profile_args="--profile $LOOP_PROFILE "
   _quota_guidance_log "============================================================"
@@ -1338,6 +1390,74 @@ heal_false_dependency_blocks() {
     print) echo "dep-block-heal: $promoted" ;;
     quiet) ;;
     *) type log >/dev/null 2>&1 && log "False dep-block heal → +${ORCH_READY_LABEL:-ready}: $promoted" || true ;;
+  esac
+}
+
+# Call at start of pr-loop (after heal_false_dependency_blocks).
+# Scoped orphans: an issue that went through gh-scope-issue but lost every
+# ship/park label (e.g. a run mis-parked a no-product run as awaiting-merge
+# and a human removed the label) is invisible to every queue — the loop would
+# report "nothing left to do" while the ticket is unimplemented. The scoped
+# body shape proves pipeline provenance; restore `ready` (ready_queue still
+# defers on open deps). Raw unscoped ideas stay label-less for scope-loop.
+heal_unlabeled_scoped_orphans() {
+  local mode="${1:-log}"
+  [ -n "${REPO:-}" ] || return 0
+  ensure_loop_labels
+
+  local healed
+  healed=$(
+    REPO_MATCH="$REPO" \
+    READY_LABEL="${ORCH_READY_LABEL:-ready}" \
+    python3 "$(_labels_py)" heal-unlabeled-scoped 2>/dev/null || true
+  )
+  healed=$(echo "$healed" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
+  if [ -z "$healed" ]; then
+    case "$mode" in
+      print) echo "unlabeled-scoped-heal: (none)" ;;
+      quiet) ;;
+      *) type log >/dev/null 2>&1 && log "Unlabeled-scoped heal: none" || true ;;
+    esac
+    return 0
+  fi
+  case "$mode" in
+    print) echo "unlabeled-scoped-heal: $healed" ;;
+    quiet) ;;
+    *)
+      type log >/dev/null 2>&1 && log "Unlabeled-scoped heal → +${ORCH_READY_LABEL:-ready}: $healed (lost every ship/park label; scoped body proves pipeline provenance)" || true
+      local n
+      for n in $healed; do
+        notify "$n" "auto-heal: no ship/park label (dropped out of every queue) but the body is a scoped spec. Restored \`ready\` — pr-loop re-picks it; dependency deferral still applies. If this was parked on purpose, use \`needs-input\` instead of removing labels."
+      done
+      ;;
+  esac
+}
+
+# `awaiting-merge` on a CLOSED issue is stale (the merge landed and the
+# closer forgot the label). Strip it so leftover reports stay honest.
+strip_closed_awaiting_merge() {
+  local mode="${1:-log}"
+  [ -n "${REPO:-}" ] || return 0
+  ensure_loop_labels
+
+  local stripped
+  stripped=$(
+    REPO_MATCH="$REPO" \
+    python3 "$(_labels_py)" strip-closed-awaiting 2>/dev/null || true
+  )
+  stripped=$(echo "$stripped" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
+  if [ -z "$stripped" ]; then
+    case "$mode" in
+      print) echo "strip-closed-awaiting: (none)" ;;
+      quiet) ;;
+      *) type log >/dev/null 2>&1 && log "Closed awaiting-merge strip: none" || true ;;
+    esac
+    return 0
+  fi
+  case "$mode" in
+    print) echo "strip-closed-awaiting: $stripped" ;;
+    quiet) ;;
+    *) type log >/dev/null 2>&1 && log "Removed stale \`awaiting-merge\` from closed issue(s): $stripped" || true ;;
   esac
 }
 

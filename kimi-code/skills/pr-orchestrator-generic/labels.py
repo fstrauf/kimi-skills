@@ -8,6 +8,12 @@ CLI (env: REPO_MATCH=owner/repo, optional READY_LABEL / TRIAGE_LABEL):
                     prints "N N N" (or empty)
   heal-dep-blocks   -blocked +ready when blocked only for sibling deps
                     prints "N N N" (or empty)
+  heal-unlabeled-scoped
+                    scoped issues that lost every ship/park label → +ready
+                    prints "N N N" (or empty)
+  strip-closed-awaiting
+                    remove `awaiting-merge` from closed issues
+                    prints "N N N" (or empty)
   leftovers         print parked / waiting queues (never "Done" if any remain)
 """
 
@@ -29,6 +35,14 @@ DEP_LANG = re.compile(
     r"(?i)(##\s*Depends on\b|depends on\b|do not start until\s*#\d|"
     r"blocked on #\d|parent epic:\s*#\d)"
 )
+# gh-scope-issue output shape — proof the issue went through the pipeline.
+SCOPED_SECTION = re.compile(r"(?im)^##\s*(Depends on|Acceptance Criteria|Proposed Scope)\s*$")
+# Every label that places an issue in a queue or a park. An open issue with
+# none of these is invisible to scope-loop, pr-loop, and the leftover report.
+SHIP_OR_PARK = {
+    "ready", "agent-working", "agent-failed", "needs-input", "blocked",
+    "awaiting-merge", "scoping", "tracking", "epic", "no-ai", "no-agent",
+}
 
 
 def is_epic_title(title: str) -> bool:
@@ -63,6 +77,23 @@ def should_heal_dep_block(issue, *, ready="ready") -> bool:
     if SHIP_GATE.search(body) or EXTERNAL.search(body):
         return False
     return bool(DEP_LANG.search(body))
+
+
+def should_heal_unlabeled_scoped(issue, *, ready="ready"):
+    """True when a scoped issue lost every ship/park label.
+
+    Happens when a run mis-parks (e.g. awaiting-merge applied to a run that
+    produced no PR) and a human later removes the park label without adding a
+    queue label. The scoped body shape (gh-scope-issue output) proves it went
+    through the pipeline; restoring `ready` re-queues it (dependency deferral
+    in ready_queue still applies). Raw unscoped ideas keep label `*(none)*`
+    and stay with scope-loop.
+    """
+    if is_epic_title(issue.get("title") or ""):
+        return False
+    if label_names(issue) & SHIP_OR_PARK:
+        return False
+    return bool(SCOPED_SECTION.search(issue.get("body") or ""))
 
 
 def _gh_json(args):
@@ -127,6 +158,39 @@ def heal_dep_blocks(repo, *, ready="ready", apply=True):
     return promoted
 
 
+def heal_unlabeled_scoped(repo, *, ready="ready", apply=True):
+    issues = _gh_json([
+        "issue", "list", "--repo", repo, "--state", "open",
+        "--limit", "100",
+        "--json", "number,title,labels,body",
+    ])
+    healed = []
+    for it in issues:
+        if not should_heal_unlabeled_scoped(it, ready=ready):
+            continue
+        n = it["number"]
+        if apply:
+            _gh_edit(repo, n, "--add-label", ready)
+        healed.append(str(n))
+    return healed
+
+
+def strip_closed_awaiting(repo, *, apply=True):
+    """`awaiting-merge` on a closed issue is stale — the merge already landed."""
+    issues = _gh_json([
+        "issue", "list", "--repo", repo, "--state", "closed",
+        "--label", "awaiting-merge", "--limit", "100",
+        "--json", "number",
+    ])
+    stripped = []
+    for it in issues:
+        n = it["number"]
+        if apply:
+            _gh_edit(repo, n, "--remove-label", "awaiting-merge")
+        stripped.append(str(n))
+    return stripped
+
+
 def leftovers(repo, *, ready="ready"):
     """Snapshot of parked / waiting work. Empty dict values omitted from print."""
     issues = _gh_json([
@@ -176,7 +240,8 @@ def format_leftovers(buckets):
     if buckets.get("needs-input"):
         lines.append("  drain questions: answer on the issue, then -needs-input +ready")
     if buckets.get("agent-failed"):
-        lines.append("  retry: gh issue edit N --remove-label agent-failed --add-label ready")
+        lines.append("  retry (manual restart): gh issue edit N --remove-label agent-failed --add-label ready")
+        lines.append("  note: agent-failed WITH a draft PR auto-resumes on the next pr-loop run")
     return "\n".join(lines)
 
 
@@ -194,6 +259,12 @@ def main():
         return
     if cmd == "heal-dep-blocks":
         print(" ".join(heal_dep_blocks(repo, ready=ready)))
+        return
+    if cmd == "heal-unlabeled-scoped":
+        print(" ".join(heal_unlabeled_scoped(repo, ready=ready)))
+        return
+    if cmd == "strip-closed-awaiting":
+        print(" ".join(strip_closed_awaiting(repo)))
         return
     if cmd == "leftovers":
         print(format_leftovers(leftovers(repo, ready=ready)))

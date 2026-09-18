@@ -1,6 +1,6 @@
 # agent-skills (repo: `kimi-skills`)
 
-Version-controlled home for **personal, cross-repo agent skills** used by Kimi Code, Grok Build, and other harnesses on this machine.
+Version-controlled home for **personal, cross-repo agent skills** used by Kimi Code, Grok Build, Claude Code (loop skills via `~/.claude/skills` install links + `~/.claude/agents`), and other harnesses on this machine.
 
 The GitHub repo is still named `kimi-skills` for history; treat it as the **agent skills** source of truth, not “Kimi-only.”
 

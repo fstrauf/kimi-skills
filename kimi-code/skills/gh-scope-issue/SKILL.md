@@ -158,6 +158,7 @@ human       →  only needs-input / true external blocked
 # No manual label needed — create issues, then:
 scope-loop --profile pageseeds-app --agent grok
 scope-loop --profile pageseeds --agent grok
+scope-loop --profile coffee --agent claude     # cost-routed (see pr-orchestrator-generic/routing.py)
 # then:
 pr-loop --profile pageseeds-app --agent grok
 ```
@@ -233,9 +234,9 @@ Do **not** require label `scoping`. Process until empty.
 ### Phase 3 — Codebase deep dive (the core of this skill)
 
 1. **Find where the problem is produced**, not only where it is noticed.  
-2. Explore with tools (and 1–2 explore subagents if useful): call paths, existing modules that already do ≥80% of the ask, drift/duplication.  
+2. Explore with tools (and 1–2 explore subagents if useful, cost role `explore`: `python3 "${ORCH_ROUTING_TOOL:-$HOME/.kimi-code/skills/pr-orchestrator-generic/routing.py}" route explore --host "$ORCH_HOST"`; on Claude that is `Agent(subagent_type=loop-explorer, model=haiku)`): call paths, existing modules that already do ≥80% of the ask, drift/duplication. Keep raw file reading in the subagents and bring back only `file:line` conclusions.  
 3. **Architecture fit:** Which module owns this? Extend it vs new parallel path? Does the fix sit in the right layer?  
-4. **Documentation fit:** Primary docs for the area — contradicts / extends / clarifies / untouched? If contract changes, ticket must require doc updates or `NOTE:`/`BUSINESS RULE:` comments. If no docs, say so — do not invent a mandatory doc index for repos that lack one.  
+4. **Documentation fit:** Primary docs for the area — contradicts / extends / clarifies / untouched? If contract changes, ticket must require doc updates or `NOTE:`/`BUSINESS RULE:` comments. If no docs, say so — do not invent a mandatory doc index for repos that lack one. For an HTTP API change, also identify the product repository's canonical OpenAPI file and validation command; do not require OpenAPI for non-API work.  
 5. **Existing coverage:** Prefer reuse over greenfield.  
 6. Write symptom-vs-origin explicitly.
 
@@ -255,7 +256,7 @@ Before designing:
 
 ### Phase 6 — Draft the body
 
-Prefer **refine** a good ticket over full rewrite. Always include:
+Prefer **refine** a good ticket over full rewrite. Always include the core sections below; add the API contract section only when the issue changes an HTTP API:
 
 ```markdown
 ## Problem
@@ -272,11 +273,20 @@ Prefer **refine** a good ticket over full rewrite. Always include:
 ## Proposed change (minimal)
 ## Architecture fit
 ## Documentation fit
+## API contract
+<!-- Include this section only when the issue changes an HTTP API. It supplements, and does not replace, the rest of this specification. -->
+- API change: yes/no
+- OpenAPI file: `<repo-relative path or not yet established>`
+- Validation command: `<documented repo command or not yet established>`
+- Contract delta: `<endpoints, parameters, request/response schemas, status codes, and auth changes>`
+- Compatibility: additive / breaking / migration required
+
 ## File change matrix
 ## Non-goals
 ## Acceptance criteria
 ## QA / verification
 ## Estimate
+Size: S|M|L — <one-line reason>
 <!-- Only if true external gate (budget/legal) — otherwise omit -->
 ## Ship gate (external)
 - [ ] …
@@ -285,7 +295,15 @@ Prefer **refine** a good ticket over full rewrite. Always include:
 </details>
 ```
 
-Acceptance must include: fix addresses origin (`file:line`), not only the symptom.
+`## Estimate` **must** start with a machine-readable `Size:` line. pr-loop reads it to choose model tier and effort (`pr-orchestrator-generic/routing.py`), so size honestly. Over-sizing burns quota; under-sizing only costs an escalated retry.
+
+| Size | When |
+|------|------|
+| `S` | ≤ 3 files, one module, no schema / API / migration change, obvious pattern to copy |
+| `M` | ≤ 10 files, or crosses one boundary (UI↔API, new column, new endpoint) |
+| `L` | Cross-module, data migration, `API change: yes` breaking, auth/billing/security-sensitive, or an epic child whose stack deps are still open |
+
+Acceptance must include: fix addresses origin (`file:line`), not only the symptom. When `API change: yes`, acceptance must also require that the OpenAPI document describes the intended boundary and that the product repository's documented contract validation passes.
 
 ### Phase 7 — Publish (REST only)
 
@@ -315,6 +333,7 @@ Acceptance must include: fix addresses origin (`file:line`), not only the sympto
 - Expanding scope (“while we’re here…”)  
 - Rubber-stamping a wrong solution because the ticket asked for it  
 - Shipping architecture that duplicates an existing module  
+- Requiring or inventing an OpenAPI file for work that does not cross an HTTP API boundary  
 - Adding `ready` to epics or delete-candidates  
 - Implementing the feature “to verify” the scope  
 - **`blocked` because a dependency issue is still open or columns are not on main yet** — use `## Depends on` + `ready`  

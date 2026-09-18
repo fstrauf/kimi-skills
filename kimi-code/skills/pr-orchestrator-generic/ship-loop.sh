@@ -22,7 +22,7 @@ while [ $# -gt 0 ]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Usage: ship-loop --profile NAME [--agent kimi|grok] [--ask] [max-issues]
+Usage: ship-loop --profile NAME [--agent kimi|grok|ori|openrouter|claude] [--ask] [max-issues]
 
 Runs scope-loop then pr-loop with the same profile. Fail-open: one stuck
 ticket never stops the rest. Prints leftovers (needs-input, awaiting-merge,

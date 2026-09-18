@@ -55,7 +55,11 @@ def issue_pr_index(prs):
     idx = {}
     for pr in prs:
         for n in issues_closed_by(pr):
-            idx.setdefault(n, {"pr": pr["number"], "head": pr.get("headRefName") or ""})
+            idx.setdefault(n, {
+                "pr": pr["number"],
+                "head": pr.get("headRefName") or "",
+                "isDraft": bool(pr.get("isDraft", False)),
+            })
     return idx
 
 

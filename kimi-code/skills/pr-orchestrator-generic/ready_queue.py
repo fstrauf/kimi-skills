@@ -45,7 +45,11 @@ import pr_chain  # canonical open-PR graph (issue↔PR matching lives there)
 repo = ""
 
 LABEL_PRIORITIES = ("priority/P0", "priority/P1", "priority/P2", "priority/P3")
-SKIP = {"blocked", "agent-failed", "agent-working", "tracking", "epic", "no-ai", "no-agent", "awaiting-merge"}
+SKIP = {"blocked", "agent-working", "tracking", "epic", "no-ai", "no-agent", "awaiting-merge"}
+# Max consecutive failed attempts before a resumable (agent-failed + draft PR)
+# issue stops auto-re-queueing and needs a human. `attempt` comes from the
+# ship-loop state marker on the PR.
+RESUME_MAX_ATTEMPTS = int(os.environ.get("ORCH_RESUME_MAX_ATTEMPTS", "3"))
 state_cache = {}
 _pr_index = None  # {issue_n: {"pr": int, "head": str}} — built once per run
 _pr_list = None   # raw open PR list (for ChainGraph / stack-top)
@@ -146,7 +150,7 @@ def open_pr_index():
     try:
         prs = gh_json([
             "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
-            "--json", "number,headRefName,baseRefName,body,title",
+            "--json", "number,headRefName,baseRefName,body,title,isDraft",
         ])
     except SystemExit:
         prs = []
@@ -165,6 +169,36 @@ def open_stacks():
     except SystemExit:
         _stacks = []
     return _stacks
+
+
+def _resume_attempts_exhausted(existing) -> bool:
+    """True when an agent-failed resumable PR has hit the attempt cap.
+
+    Reads the ship-loop-state marker from the PR comments (`attempt=N`). Falls
+    OPEN (not exhausted) when the marker is unreadable so a transient gh error
+    never strands a resumable ticket.
+    """
+    if RESUME_MAX_ATTEMPTS < 0:
+        return False
+    try:
+        r = subprocess.run(
+            ["python3", os.path.join(os.path.dirname(__file__), "github_state.py"),
+             "read-pr", str(existing["pr"])],
+            env={**os.environ, "REPO_MATCH": repo},
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    state = r.stdout.strip()
+    if not state:
+        return False
+    m = re.search(r"\battempt=(\d+)", state)
+    if not m:
+        return False
+    try:
+        return int(m.group(1)) >= RESUME_MAX_ATTEMPTS
+    except ValueError:
+        return False
 
 
 def dep_status(dep):
@@ -207,15 +241,36 @@ def compute_queue(ready_label):
     for issue in issues:
         n = issue["number"]
         labels = {l["name"] for l in (issue.get("labels") or [])}
+        existing = open_pr_index().get(n)
+
+        # --- Resume candidates (agent-failed + DRAFT PR) ----------------------
+        # An issue that failed with a draft PR is RESUMABLE: the worker reuses
+        # the PR branch and continues from the recorded phase. It must be
+        # queueable again automatically. A DRAFT PR also means the worker will
+        # hand the existing branch to the orchestrator instead of re-implementing.
+        # Attempt-capped: after MAX_RESUME_ATTEMPTS failures we stop auto-picking.
+        if "agent-failed" in labels and existing and existing.get("isDraft", False):
+            if _resume_attempts_exhausted(existing):
+                continue
+            candidates.append({
+                "n": n, "rank": 0, "rank_label": "RESUME",
+                "title": (issue.get("title") or "")[:60] + " [resume]",
+                "deps": set(),
+            })
+            continue
+
         if labels & SKIP:
             continue
         title = (issue.get("title") or "").strip()
         if re.match(r"(?i)^\s*(epic\b|\[epic\])", title):
             continue
-        # Must use pr_chain (Closes/Fixes/Resolves + feature/N- branch).
+        # An existing READY PR is not queueable: it is awaiting human merge or
+        # is already a completed stack layer. An existing DRAFT PR IS queueable
+        # when the issue carries `ready`: the worker resumes that branch/PR from
+        # its last state marker instead of creating work from scratch.
         # Never `gh pr list --search "Closes #N in:body"` — GitHub ANDs tokens,
         # so a PR that says "Closes #275" and later mentions "#272" parks #272.
-        if n in open_pr_index():
+        if existing and not existing.get("isDraft", False):
             continue
         rank = next((i for i, p in enumerate(LABEL_PRIORITIES) if p in labels), 99)
         rank_label = {0: "P0", 1: "P1", 2: "P2", 3: "P3"}.get(rank, "no-priority")

@@ -31,13 +31,13 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 usage() {
   cat <<'USAGE'
-Usage: scope-all.sh --profile NAME [--agent kimi|grok] [options] [max-issues]
+Usage: scope-all.sh --profile NAME [--agent kimi|grok|ori|openrouter|claude] [options] [max-issues]
 
 Required:
   --profile NAME      Load profiles/NAME.env (same as pr-loop)
 
 Optional:
-  --agent kimi|grok   CLI that runs gh-scope-issue (default: kimi, or $ORCH_AGENT)
+  --agent kimi|grok|ori|openrouter|claude CLI that runs gh-scope-issue (default: kimi, or $ORCH_AGENT)
   --repo-dir PATH     Checkout path (first-time setup only)
   --project N         Project number (setup only; board not used for queue)
   --owner OWNER       Project owner for setup only
@@ -79,7 +79,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --agent)
-      [ $# -ge 2 ] || { echo "ABORT: --agent requires kimi|grok" >&2; exit 1; }
+      [ $# -ge 2 ] || { echo "ABORT: --agent requires kimi|grok|ori|openrouter|claude" >&2; exit 1; }
       export ORCH_AGENT="$2"
       shift 2
       ;;
@@ -178,6 +178,8 @@ gh label create "needs-input" --repo "$REPO" --color "D93F0B" \
 RUN_ID=$(date +%Y%m%d-%H%M%S)
 if [ "${ORCH_AGENT}" = "grok" ]; then
   LOG_ROOT="${HOME}/.grok/scope-loop-${LOOP_PROFILE}"
+elif [ "${ORCH_AGENT}" = "claude" ]; then
+  LOG_ROOT="${HOME}/.claude/scope-loop-${LOOP_PROFILE}"
 else
   LOG_ROOT="${HOME}/.kimi-code/scope-loop-${LOOP_PROFILE}"
 fi
@@ -216,6 +218,8 @@ if [ -z "${ISSUES// /}" ]; then
   exit 0
 fi
 
+resolve_orch_agent
+
 case "$ORCH_AGENT" in
   kimi)
     run_scope() {
@@ -229,8 +233,25 @@ case "$ORCH_AGENT" in
       grok -p "/gh-scope-issue $n" --always-approve
     }
     ;;
+  ori|openrouter)
+    run_scope() {
+      local n=$1
+      "$ORCH_CLI" -p "${ORCH_SKILL:-/gh-scope-issue} $n" ${ORCH_CLI_ARGS:-}
+    }
+    ;;
+  claude)
+    # Scope session tier/effort from routing.py; explore subagents route themselves.
+    SCOPE_ROUTE_ARGS=$(python3 "$SCRIPT_DIR/routing.py" cli-args scope --host claude 2>/dev/null || true)
+    export ORCH_ROUTING_TOOL="$SCRIPT_DIR/routing.py"
+    run_scope() {
+      local n=$1
+      # shellcheck disable=SC2086
+      claude -p "/gh-scope-issue $n" $SCOPE_ROUTE_ARGS \
+        --permission-mode bypassPermissions --output-format stream-json --verbose
+    }
+    ;;
   *)
-    echo "ABORT: unknown ORCH_AGENT=$ORCH_AGENT (use kimi|grok)" >&2
+    echo "ABORT: unknown ORCH_AGENT=$ORCH_AGENT (use kimi|grok|ori|openrouter|claude)" >&2
     exit 1
     ;;
 esac

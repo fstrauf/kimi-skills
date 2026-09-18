@@ -318,4 +318,4 @@ echo
 echo "Use with:"
 echo "  pr-loop --profile $PROFILE_NAME --agent grok          # Ready → ship"
 echo "  scope-loop --profile $PROFILE_NAME --agent grok       # Scoping → Ready"
-echo "  ./loop-ready-issues.sh --profile $PROFILE_NAME --agent kimi 1"
+echo "  ./loop-ready-issues.sh --profile $PROFILE_NAME --agent kimi 1 (or --agent ori)"

@@ -33,6 +33,9 @@ root_links:
     target: ~/01_code/kimi-skills/kimi-code/skills
   - path: ~/.agents/skills
     target: ~/01_code/kimi-skills/agents/skills
+  # Claude Code subagents for the loop (model/effort per role — see routing.py)
+  - path: ~/.claude/agents
+    target: ~/01_code/kimi-skills/claude/agents
 
 # Grok should load universal tree (config check is advisory)
 grok_config:
@@ -42,6 +45,12 @@ grok_config:
 
 skills:
   # ── A: universal (canonical = under universal root) ─────────────────────
+  article-conversation:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/article-conversation
+  article-draft:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/article-draft
   betterstack-error-triage:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/betterstack-error-triage
@@ -54,9 +63,16 @@ skills:
   gh-scope-issue:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/gh-scope-issue
+    install:
+      - ~/.claude/skills/gh-scope-issue
   gh-ticket-hygiene:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/gh-ticket-hygiene
+    install:
+      - ~/.claude/skills/gh-ticket-hygiene
+  growth-review:
+    bucket: A
+    canonical: ~/01_code/kimi-skills/kimi-code/skills/growth-review
   posthog-weekly-insights:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/posthog-weekly-insights
@@ -64,19 +80,26 @@ skills:
     bucket: A
     notes: "Call-analyzer thick overlay; dual-host; single file in universal tree"
     canonical: ~/01_code/kimi-skills/kimi-code/skills/pr-orchestrator
+    install:
+      - ~/.claude/skills/pr-orchestrator
   pr-orchestrator-generic:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/pr-orchestrator-generic
+    install:
+      - ~/.claude/skills/pr-orchestrator-generic
   react-doctor:
     bucket: A
     notes: "React health scan via react-doctor CLI; pair with shadscan"
     canonical: ~/01_code/kimi-skills/kimi-code/skills/react-doctor
+    install:
+      - ~/.claude/skills/react-doctor
   shadscan:
     bucket: A
     notes: "shadcn/ui scan via @shadscan/cli; pair with react-doctor"
     canonical: ~/01_code/kimi-skills/kimi-code/skills/shadscan
     install:
       - ~/.grok/skills/shadscan
+      - ~/.claude/skills/shadscan
   seo-deep-dive:
     bucket: A
     notes: "Bootstrap SEO; universal. Optional Grok convenience link."
@@ -89,6 +112,8 @@ skills:
   thermo-nuclear-code-quality-review:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/thermo-nuclear-code-quality-review
+    install:
+      - ~/.claude/skills/thermo-nuclear-code-quality-review
 
   # agents/ tree (also user-installed via ~/.agents/skills root link)
   kimi-webbridge:

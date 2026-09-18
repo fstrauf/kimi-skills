@@ -52,7 +52,9 @@ import time
 # numbers like "429" — so issue text quoted into the log is unlikely to
 # false-positive. Only the log tail is scanned on top of that (see below).
 QUOTA_PATTERNS = [
-    r"usage limit",  # grok: "You've reached your free Grok Build usage limit"
+    r"usage limit",  # grok: "You've reached your free Grok Build usage limit"; claude: "Claude AI usage limit reached"
+    r"(5-hour|session|weekly|opus) limit reached",  # claude subscription windows
+    r"you've hit your (usage )?limit",  # claude: "You've hit your limit · resets 3pm"
     r"quota (exceeded|exhausted)",
     r"out of (quota|credits)",
     r"insufficient (credits|balance|quota|funds)",
