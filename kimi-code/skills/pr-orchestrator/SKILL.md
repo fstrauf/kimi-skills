@@ -22,6 +22,26 @@ This is the **call-analyzer / Days to Expiry thick overlay**. It assumes the mon
 
 **Labels and handover:** [docs/github-loop.md](../../../docs/github-loop.md).
 
+## Base branch — `dev`, never `main` (read before Phase 0)
+
+call-analyzer integrates on **`dev`**. `main` only ever changes by merging a release PR that `pnpm release:dev-to-main` opens; a human merges it and runs `pnpm release:finalize`. **Never branch from `main`, never open a PR against `main`, never run the release scripts.**
+
+Resolve `BASE` once, before Phase 0, and carry it as a **literal** value in your working notes. Shell env does not persist between tool calls on most hosts, so inline the value into every command rather than relying on an earlier `export`:
+
+- `ORCH_BASE_BRANCH` set (pr-loop exports it: a stacked dependency's PR head, or the profile's `ORCH_BASE_BRANCH_DEFAULT=dev`) → `BASE=$ORCH_BASE_BRANCH`.
+- Otherwise → **`BASE=dev`**. This is the direct `/pr-orchestrator <N>` case, where no profile is loaded. Do **not** fall back to the repo's default branch: GitHub's default is `main`, and that fallback is how two feature PRs landed on `main` directly on 2026-09-18.
+
+Everywhere the generic skill says "default branch", `origin/main`, or `origin/master`, use `origin/$BASE`:
+
+- fork: `git fetch origin <BASE> && git checkout -b feature/<N>-<slug> origin/<BASE>`
+- PR: `gh pr create --draft --base <BASE> ...`. Always pass `--base` explicitly; omitting it targets `main`.
+- diff ranges for review, fix verification, gate classification: `origin/<BASE>...HEAD`
+- gate: `pnpm test:pr --base <BASE>`
+
+**Verify right after the draft PR exists:** `gh pr view <pr> --json baseRefName -q .baseRefName` must equal `BASE`. If it says `main`, retarget immediately (`gh pr edit <pr> --base <BASE>`) and rebase the branch onto `origin/<BASE>` if it was forked from `main`. Then continue.
+
+Sanity check: `pnpm test:pr` exists on `dev`. If `webapp/package.json` has no `test:pr` script, you forked from the wrong branch.
+
 ## Phases 0–4 — follow generic
 
 Read the sibling `../pr-orchestrator-generic/SKILL.md` first for the shared host, Ori/OpenRouter, queue, review, and Phases 0–4 contract. Then read this overlay for call-analyzer-specific gates and execute its Phases 0–4 (host map, implement, draft PR, thermonuclear ×3, stack rules).
@@ -43,11 +63,11 @@ After generic Phase 4 PASS, continue here. Do **not** enter Phase 5 without a cl
 
 ### Phase 5 — Test gate
 
-Two-tier gate (epic #1748): this phase runs `pnpm test:pr` — the lean, fail-closed PR-tier gate — not the full `pnpm test:all`. The full suite runs once, on `dev` HEAD, at release time (`webapp/scripts/release-dev-to-main.mjs`, run by a human before fast-forwarding to `main`) — it is not part of this per-PR gate. `test:pr` can still exercise suites that need the local dev stack (Next.js frontend + Python API) depending on the diff. Start it if needed. **Do not tear down the stack here** — Phase 6 (UI gate) needs it; stop only after that phase finishes.
+Two-tier gate (epic #1748): this phase runs `pnpm test:pr` — the lean, fail-closed PR-tier gate — not the full `pnpm test:all`. The full suite runs once, on `dev` HEAD, at release time (`pnpm release:dev-to-main` opens the `dev → main` release PR; a human merges it and runs `pnpm release:finalize`). It is not part of this per-PR gate, and agents never run the release scripts. `test:pr` can still exercise suites that need the local dev stack (Next.js frontend + Python API) depending on the diff. Start it if needed. **Do not tear down the stack here** — Phase 6 (UI gate) needs it; stop only after that phase finishes.
 
 0. **Classify the diff first — content-only fast path:**
    ```bash
-   git diff --name-only origin/${ORCH_BASE_BRANCH:-main}...HEAD 2>/dev/null || git diff --name-only origin/master...HEAD
+   git diff --name-only origin/${ORCH_BASE_BRANCH:-dev}...HEAD 2>/dev/null || git diff --name-only origin/master...HEAD
    ```
    If **every** changed path is content/automation (`webapp/content/**`, `.github/automation/**`, `docs/**`) — i.e. no `webapp/src/**`, `api/**`, `core/**`, `tests/**`, `scripts/**`, config, or lockfile changes — the full suite (incl. golden / A-B snapshot scenarios) is overkill for a blog-post PR:
    - **Skip** the dev stack and `pnpm test:pr` entirely.
@@ -76,7 +96,7 @@ Two-tier gate (epic #1748): this phase runs `pnpm test:pr` — the lean, fail-cl
    - `ALLOW_TEST_HELPERS=true` is mandatory: e2e calls `/api/test-utils/*`. An already-running stack must also have been started with the flag; restart if unsure.
    - Poll both ports up to ~90s. If not ready, stop the background task, comment on the PR, abort.
 3. **Run the test pipeline** as background:
-   - command: `cd webapp && pnpm test:pr --base "${ORCH_BASE_BRANCH:-main}"`
+   - command: `cd webapp && pnpm test:pr --base "${ORCH_BASE_BRANCH:-dev}"`
    - Same background flags as above; much shorter than the old full-suite run, but a calc-path or unmapped-file diff can still escalate to the fuller tier — give it room
    - Wait until completion (Kimi: `TaskOutput` · Grok: `get_command_or_subagent_output` with large `timeout_ms` · Ori: `wait_agent` on spawned agent or `TaskOutput` through `task`)
 4. **Keep the dev stack running** for Phase 6. Record `started_dev_stack`.
@@ -95,7 +115,7 @@ Walk changed frontend UI surfaces with Playwright MCP. **v1 is advisory only** �
 1. Mark "UI verification gate (advisory)" in progress.
 2. **Classify the diff** for frontend UI surfaces:
    ```bash
-   git diff --name-only origin/${ORCH_BASE_BRANCH:-main}...HEAD 2>/dev/null || git diff --name-only origin/master...HEAD
+   git diff --name-only origin/${ORCH_BASE_BRANCH:-dev}...HEAD 2>/dev/null || git diff --name-only origin/master...HEAD
    ```
    Count as UI surface if any path matches pages/components/app routes under `webapp/src/**` (e.g. `webapp/src/app/**`, `webapp/src/components/**`, feature UI under `webapp/src/components/features/**`). Ignore pure docs, Python/API-only, lockfile-only, tests-only, and non-UI `webapp/` scripts.
    - If none match → `gh pr comment`: `ℹ️ UI gate skipped — no frontend UI changes`. Mark done, tear down stack if `started_dev_stack` (step 8), proceed to Phase 7.
@@ -140,7 +160,7 @@ Final automated safety gate before ready. Implements the "Automated PR Orchestra
 1. Mark "Real-user QA safety check" in progress.
 2. **Classify the diff:**
    ```bash
-   git diff --name-only origin/${ORCH_BASE_BRANCH:-main}...HEAD 2>/dev/null || git diff --name-only origin/master...HEAD
+   git diff --name-only origin/${ORCH_BASE_BRANCH:-dev}...HEAD 2>/dev/null || git diff --name-only origin/master...HEAD
    ```
    Buckets (a PR may match several):
    - `pipeline_any` — `core/portfolio/**`, `core/services/ibkr_flex/**`, `core/services/scanner/**`, `core/services/brokers/snaptrade_processor.py`, `core/db/portfolio_persistence.py`, `core/db/portfolio_exclusions.py`, `core/db/snaptrade_sync_jobs.py`, `core/qa/**`, `api/portfolio_*.py`, `api/v1/portfolio*.py`, `api/v1/test_set.py`, `api/v1/import_flex.py`, `api/v1/snaptrade_admin.py`, `api/routers/portfolio.py`, `api/routers/snaptrade.py`, `api/routers/ibkr_flex.py`, `api/services/portfolio_*.py`, `api/services/position_detail_service.py`, `api/services/trade_service.py`, `api/jobs/portfolio*.py`, `api/jobs/flex_import_job.py`, `api/validation/cross_reference.py`, `ops/resync_*.py`, `tests/golden/`, `scripts/qa_*.py`, `core/testing/**`
