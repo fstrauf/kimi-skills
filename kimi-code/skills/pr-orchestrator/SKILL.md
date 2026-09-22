@@ -151,13 +151,10 @@ Final automated safety gate before ready. Implements the "Automated PR Orchestra
 
 **Canonical test users** (blast-radius; keep in sync with `docs/d_USER_TESTING_GUIDE.md`):
 - `mickywook@gmail.com`
-- `smmitche12@gmail.com`
+- `darrickkelmore1973@gmail.com`
 - `f.strauf@gmail.com`
 
-**Default QA users** (when the issue has no explicit QA email — never block the gate for a missing email):
-- `smmitche12@gmail.com`
-- `mickywook@gmail.com`
-- `darrickkelmore1973@gmail.com`
+**Default QA users** (when the issue has no explicit QA email — never block the gate for a missing email): the canonical test users above.
 
 1. Mark "Real-user QA safety check" in progress.
 2. **Classify the diff:**
@@ -178,7 +175,7 @@ Final automated safety gate before ready. Implements the "Automated PR Orchestra
    - Prefer an email from the issue title/body (`user@example.com` or `QA user: <email>`).
    - If found → set `qa_emails` to that single address (`qa_source=issue`).
    - If **not** found → do **not** stop. Set `qa_emails` to the default trio above (`qa_source=default`) and PR-comment:  
-     `ℹ️ No QA user on issue — defaulting to smmitche12@gmail.com, mickywook@gmail.com, darrickkelmore1973@gmail.com`.
+     `ℹ️ No QA user on issue — defaulting to mickywook@gmail.com, darrickkelmore1973@gmail.com, f.strauf@gmail.com`.
    - Build `qa_email_csv` as a comma-joined list of `qa_emails` (no spaces).
 4. Ensure env:
    - `DATABASE_URL` from env or `api/.env` / `api/.env.local` (SELECT-only scripts; do not print secrets in full to the user).
@@ -192,10 +189,10 @@ Final automated safety gate before ready. Implements the "Automated PR Orchestra
 6. **Targeted + blast radius** (dedupe if the issue email is already a canonical user):
    ```bash
    uv run python scripts/qa_pipeline_integrity.py \
-     --email <qa_email_csv>,mickywook@gmail.com,smmitche12@gmail.com,f.strauf@gmail.com \
+     --email <qa_email_csv>,mickywook@gmail.com,darrickkelmore1973@gmail.com,f.strauf@gmail.com \
      --blast-radius --ci
    uv run python scripts/qa_ibkr_crossref.py \
-     --email <qa_email_csv>,mickywook@gmail.com,smmitche12@gmail.com,f.strauf@gmail.com \
+     --email <qa_email_csv>,mickywook@gmail.com,darrickkelmore1973@gmail.com,f.strauf@gmail.com \
      --blast-radius --ci
    ```
 7. Interpret: `ALL_CLEAR` / `OK_WITH_WARNINGS` continue; `INVESTIGATE` or non-zero exit STOP (no ready). Common WARNs (B6, B7, B9, D4) may be non-blocking.
