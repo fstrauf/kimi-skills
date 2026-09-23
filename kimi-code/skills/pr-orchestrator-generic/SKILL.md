@@ -370,7 +370,9 @@ Optional host-specific extras (do not require them):
 
 The supervisor may invoke this skill again against an existing PR. Do not create a second branch or PR when `ORCH_RESUME_PR` is set; reuse `ORCH_RESUME_HEAD` and continue from `ORCH_RESUME_PHASE`.
 
-The supervisor provides `ORCH_STATE_TOOL`, `ORCH_STATE_ISSUE_N`, and optionally `ORCH_STATE_PR_N`. At every phase boundary append a state marker:
+The supervisor provides `ORCH_STATE_TOOL`, `ORCH_STATE_ISSUE_N`, and (when resuming an existing PR) `ORCH_STATE_PR_N`. State markers are **required, not optional**: pr-loop's completion gate treats a run as done only when the PR carries a `phase=ready status=ok` marker — a missing marker means the work is re-queued as failed even if the PR is perfect. On a fresh run there is no `ORCH_STATE_PR_N` yet: markers go to the issue until the draft PR exists, then `export ORCH_STATE_PR_N=<n>` so every later marker attaches to the PR.
+
+At every phase boundary append a state marker:
 
 ```bash
 state_target="${ORCH_STATE_PR_N:-$ORCH_STATE_ISSUE_N}"
@@ -387,6 +389,7 @@ Required semantics:
 - `status=needs_input` is the only non-error zero-exit park.
 - The final successful phase MUST append `phase=ready status=ok next=ready` after every required gate passes and after `gh pr ready` succeeds.
 - Never claim success, mark an issue `awaiting-merge`, or leave a draft PR as if complete without that final marker. A draft PR with no final marker is resumable work.
+- If `ORCH_STATE_TOOL` is missing or fails to run, do NOT skip markers. Post the marker line yourself with `gh pr comment <n> --body` (or `gh issue comment` before a PR exists), preserving the exact `<!-- ship-loop-state phase=... status=... attempt=... next=... pr=... -->` format — the reader only scans comment bodies for that line.
 
 ### Phase 0 — Lock context
 

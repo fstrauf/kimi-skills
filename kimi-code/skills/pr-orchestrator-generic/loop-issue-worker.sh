@@ -24,8 +24,12 @@ ISSUE="${1:?usage: loop-issue-worker.sh <issue-number>}"
 # Second arg ignored (legacy project item id)
 ITEM_ID_HINT="${2:-}"
 
-COMMON="${LOOP_COMMON:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/loop-common.sh}"
-GITHUB_STATE_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/github_state.py"
+# The supervisor runs this worker from a single-file mktemp copy (live-swap),
+# so BASH_SOURCE's dir has no sibling files. LOOP_SELF_DIR is the real skill
+# dir, exported by the supervisor; fall back to our own dir on direct runs.
+WORKER_SCRIPT_DIR="${LOOP_SELF_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+COMMON="${LOOP_COMMON:-$WORKER_SCRIPT_DIR/loop-common.sh}"
+GITHUB_STATE_PY="$WORKER_SCRIPT_DIR/github_state.py"
 # shellcheck source=loop-common.sh
 source "$COMMON"
 if [ -z "${ORCH_CLI:-}" ]; then
@@ -138,7 +142,7 @@ export RESUME_PHASE RESUME_ATTEMPT RESUME_PR RESUME_HEAD
 
 # Cost routing (routing.py): size from the scoped body, attempt = failed runs + 1.
 # No-op for single-model hosts (empty args). Subagent routes are asked by the skill.
-ROUTING_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/routing.py"
+ROUTING_PY="$WORKER_SCRIPT_DIR/routing.py"
 ORCH_HOST="${ORCH_HOST:-$ORCH_AGENT}"
 ORCH_SIZE=$(gh issue view "$ISSUE" --repo "$REPO" --json body -q .body 2>/dev/null \
   | python3 "$ROUTING_PY" size - 2>/dev/null || echo M)
@@ -195,6 +199,10 @@ export ORCH_RESUME_HEAD="$RESUME_HEAD"
 export ORCH_RESUME_PHASE="$RESUME_PHASE"
 export ORCH_RESUME_ATTEMPT="$RESUME_ATTEMPT"
 export ORCH_STATE_TOOL="$GITHUB_STATE_PY"
+export ORCH_STATE_ISSUE_N="$ISSUE"
+# Set when resuming an existing PR. On fresh runs the agent exports the new PR
+# number itself once the draft PR exists (SKILL.md durable-state contract).
+export ORCH_STATE_PR_N="${RESUME_PR:-}"
 # shellcheck disable=SC2086
 (cd "$WORKER_CWD" && \
   ORCH_RUN_EVALS="$ORCH_RUN_EVALS" SKIP_EVALS="$SKIP_EVALS" \
@@ -208,6 +216,8 @@ export ORCH_STATE_TOOL="$GITHUB_STATE_PY"
   ORCH_RESUME_PHASE="$ORCH_RESUME_PHASE" \
   ORCH_RESUME_ATTEMPT="$ORCH_RESUME_ATTEMPT" \
   ORCH_STATE_TOOL="$ORCH_STATE_TOOL" \
+  ORCH_STATE_ISSUE_N="$ORCH_STATE_ISSUE_N" \
+  ORCH_STATE_PR_N="$ORCH_STATE_PR_N" \
   ORCH_HOST="$ORCH_HOST" ORCH_SIZE="$ORCH_SIZE" ORCH_ATTEMPT="$ORCH_ATTEMPT" \
   ORCH_ROUTING_TOOL="$ORCH_ROUTING_TOOL" \
   "$ORCH_CLI" -p "$ORCH_SKILL $ISSUE" $ORCH_CLI_ARGS) \
@@ -323,7 +333,8 @@ if ! REPO_MATCH="$REPO" python3 "$GITHUB_STATE_PY" verify "$pr_n" phase=ready st
   next_attempt=$(( ${prev_attempt:-0} + 1 ))
   REPO_MATCH="$REPO" python3 "$GITHUB_STATE_PY" append-pr "$pr_n" \
     phase=failed status=failed attempt="$next_attempt" next="${RESUME_PHASE:-implement}" pr="$pr_n" \
-    >/dev/null 2>&1 || true
+    >/dev/null 2>&1 \
+    || log "WARNING: could not append phase=failed marker to PR #$pr_n — resume state is lost"
   release_issue_failed "$ISSUE"
   # Resumable: re-queue automatically so the next run picks up the existing
   # draft PR and continues from the recorded phase (attempt-capped in the queue).
