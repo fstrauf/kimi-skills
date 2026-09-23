@@ -66,6 +66,34 @@ bets — and writes that down so next week's run never starts from amnesia.
 
 1. **DB delta** (read-only): total users, users last 7d, broker connections ever,
    subs by status (active / canceled / trialing), new subs last 30d, onboarding completions.
+   Every user/subscription/connection count **excludes test accounts** using the contract
+   SQL — definition lives in `MEASUREMENT_CONTRACT.md` → "Test-account patterns —
+   DB / ops queries"; do not re-derive it. Substring semantics, lowercase:
+
+   ```sql
+   lower(email) LIKE '%@example.com' OR lower(email) LIKE '%@test.com'
+   OR lower(email) LIKE '%fi-e2e-%' OR lower(email) LIKE '%test-trial-%'
+   ```
+
+   Use as `AND NOT (<patterns>)` on `options.users`; for child tables (subscriptions,
+   broker connections) join `options.users` on `user_id` and filter the joined email.
+   Run each count unfiltered once in a while to monitor test-share drift (roughly 4× today).
+   Also pull cap hits (issue #1669, cap-hit definition in the contract — never grade from
+   CTA clicks): distinct cap-reaching `anon_id`s, 90d, per feature:
+
+   ```sql
+   SELECT feature_key, count(DISTINCT anon_id) AS cap_hitters_90d
+   FROM options.feature_usage
+   WHERE
+     (feature_key IN ('covered_calls','cash_secured_puts','call_buying','wheel_backtest')
+        AND usage_date >= (now() - interval '90 days')::date AND count >= 10)
+     OR
+     (feature_key IN ('leaps','ib_portfolio','iron_condor','wheel')
+        AND updated_at >= now() - interval '90 days' AND count >= 3)
+   GROUP BY 1 ORDER BY 2 DESC;
+   ```
+
+   Anonymous rows carry no test signal; read cap-hit counts directionally.
 2. **PostHog delta:** run the Conversion Health dashboard tiles
    (`dashboard-insights-run` on `2085304`) and pull each tile's current numbers. If tiles are
    uncomputed, re-run the underlying queries via `query-trends` / `query-funnel` with the
