@@ -101,6 +101,7 @@ gh issue create --title "…" \
 - **Self-documenting flags**: When computing synthetic/fallback data, add a metadata flag (e.g., `_synthetic_greeks: True`) so consumers can distinguish computed from live
 - **No provider pollution**: Keep provider classes thin API wrappers; enrichment happens at the consumer layer
 - **Testability**: New modules should be pure functions with no side effects
+- **Data repairs are part of the spec**: if the bug already wrote bad rows, specify the repair as an invariant query plus the repo's repair convention from `AGENTS.md`. In call-analyzer that is a `RepairSpec` in `ops/repairs/`, and "done" means `ops/repair.py verify <name>` exits 0. Never make "run QA, no FAIL" or a prose dry-run/apply checklist the acceptance criterion.
 
 ## When NOT to use this skill
 

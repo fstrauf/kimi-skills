@@ -180,6 +180,20 @@ Skip issues that already have an open PR closing them (`Closes`/`Fixes`/`Resolve
 
 ---
 
+## Data repairs (tickets that fix existing rows)
+
+When the fix must also correct data the bug already wrote (cleanup, backfill, dedupe), the repair is part of the contract, not a post-merge prose checklist:
+
+- **Scope it per the repo's repair convention** (read `AGENTS.md`). In call-analyzer that means a `RepairSpec` in `ops/repairs/<name>.py`; the lifecycle is in `ops/README.md`.
+- **Name the invariant as a query:** which rows must not exist after the repair. That query is the spec's `targets`, and "remaining = 0" is the outcome.
+- **Acceptance is a machine-checkable command.** In call-analyzer: `uv run python ops/repair.py verify <name>` exits 0.
+  - **Never** use a fleet QA exit code, "no FAIL in the QA run", or a step where a human pastes output.
+  - Fleet QA carries unrelated known failures. If a QA check is still cited, show with `file:line` that it actually reads the repaired rows (#1917's "no D1 FAIL" criterion could not move at all).
+- **Split the work.** The implementer ships the code fix that stops new bad rows, together with the spec. The human `apply` happens after deploy and is not an implementer step.
+- **Test plan:** the E2E seeds synthetic rows in a rolled-back transaction and runs plan → apply → verify scoped to those users. The production artifact is the read-only `plan` / `verify` output.
+
+---
+
 ## Root-cause-first (non-negotiable)
 
 - **Symptom patch** = guard/null-check/UI workaround while the producer of bad state stays wrong.  
