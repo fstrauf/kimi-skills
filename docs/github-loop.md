@@ -85,6 +85,8 @@ Rules:
 - Only ship issues (not parent epics).
 - Each dep is a **bullet that starts with `#N`**. Do not put other `#N` in that section (no “open as PR #281”).
 - No deps → omit the section or write `_None_`.
+- The section, when present, is the **only** dep source — `#N` in prose elsewhere is never a dep. Without a section, only a line that **starts** `Depends on: #N` counts (“#454 depends on it” names a dependent, not a dep).
+- A dependency cycle among `ready` issues is logged to stderr and both ends are `DEFERRED[cycle(...)]` until a human fixes the bodies.
 - pr-loop topologically sorts `ready` issues. An open dep with an open PR or `awaiting-merge` is **satisfied** (stack-through): the dependent forks from that PR’s head via `ORCH_BASE_BRANCH`.
 - **Epics ship as one GitHub stack** (a line, not a bush). See below.
 

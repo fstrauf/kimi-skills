@@ -16,8 +16,13 @@ Fixes vs the old inline version:
     none ("None", "_None_", "_None_ — independent of #123") yields NO deps.
     Only leading `#N` on a section line counts (optional bullet). Trailing
     "PR #281" / "until #279" in that line or later sections are not deps.
-    Strong prose outside the section is only `do not start until #N` /
-    `blocked until|on #N`. Casual "after #275" is ignored.
+    When the section exists it is the ONLY source — prose elsewhere is never
+    scanned ("#454 depends on it, and #449/#450 ship…" once made a cycle).
+    Without a section, only a line that STARTS `Depends on[:] #N` or the
+    strong prose `do not start until #N` / `blocked until|on #N` counts.
+    Casual "after #275" / "X depends on it" is ignored.
+  * compute_queue: dependency cycles among ready issues are logged loudly to
+    stderr and deferred with a `cycle(...)` reason, never silently parked.
   * dep_status: MERGED (a dep referencing a pull request) counts as
     satisfied, and unresolvable refs (neither issue nor PR) no longer defer
     an issue forever — they are treated as satisfied with a stderr note.
@@ -80,10 +85,17 @@ def _section_declares_none(section: str) -> bool:
 
 _BULLET_DEP = re.compile(r"^[-*]\s*#(\d+)\b")
 _BARE_DEP = re.compile(r"^#(\d+)\b")
+# Explicit line form outside a section: "Depends on: #12", "- **Depends on** #12, #13".
+# The line must START with "Depends on" so "#454 depends on it" never matches.
+_LINE_DEP = re.compile(
+    r"(?im)^[ \t]*(?:[-*][ \t]*)?[*_]{0,2}depends on[*_]{0,2}[ \t]*:?[*_]{0,2}[ \t]*"
+    r"(#\d+(?:[ \t]*(?:,|&|\band\b)[ \t]*#\d+)*)"
+)
 # Strong prose only — not "Vue stays until #279" or "after #275 strip".
 _STRONG_PROSE_DEP = re.compile(
     r"(?i)(?:do not start until|blocked(?:\s+on|\s+until))\s+#(\d+)\b"
 )
+_DEPENDS_SECTION = re.compile(r"(?ims)^##\s*Depends on\s*\n(.*?)(?=^##\s|\Z)")
 
 
 def _deps_from_depends_section(section: str) -> set:
@@ -104,21 +116,15 @@ def _deps_from_depends_section(section: str) -> set:
 def parse_depends_on(body, self_n):
     if not body:
         return set()
-    deps = set()
-    rest = body
-    m = re.search(r"(?ims)^##\s*Depends on\s*\n(.*?)(?=^##\s|\Z)", body)
+    m = _DEPENDS_SECTION.search(body)
     if m:
-        deps |= _deps_from_depends_section(m.group(1))
-        # Section is authoritative — never re-scan it for casual #N mentions.
-        rest = body[: m.start()] + body[m.end():]
-    for mm in re.finditer(r"(?im)^(?!.*parent\s+epic).*depends on[:\s]+([^\n]+)", rest):
-        line = mm.group(1).strip()
-        lead = _BULLET_DEP.match(line) or _BARE_DEP.match(line)
-        if lead:
-            deps.add(int(lead.group(1)))
-        else:
-            deps.update(int(x) for x in re.findall(r"#(\d+)", line))
-    deps.update(int(x) for x in _STRONG_PROSE_DEP.findall(rest))
+        # Section is authoritative — prose elsewhere is never a dep source.
+        deps = _deps_from_depends_section(m.group(1))
+    else:
+        deps = set()
+        for mm in _LINE_DEP.finditer(body):
+            deps.update(int(x) for x in re.findall(r"#(\d+)", mm.group(1)))
+        deps.update(int(x) for x in _STRONG_PROSE_DEP.findall(body))
     deps.discard(self_n)
     return deps
 
@@ -230,6 +236,42 @@ def dep_status(dep):
     return "ok"
 
 
+def dependency_cycles(graph):
+    """Strongly-connected components of size > 1 in {n: deps} (Tarjan).
+
+    Edges to nodes outside `graph` are ignored. Returns sorted member lists.
+    """
+    index, low, on_stack, stack, out = {}, {}, set(), [], []
+
+    def visit(v):
+        index[v] = low[v] = len(index)
+        stack.append(v)
+        on_stack.add(v)
+        for w in graph[v]:
+            if w not in graph:
+                continue
+            if w not in index:
+                visit(w)
+                low[v] = min(low[v], low[w])
+            elif w in on_stack:
+                low[v] = min(low[v], index[w])
+        if low[v] == index[v]:
+            comp = []
+            while True:
+                w = stack.pop()
+                on_stack.discard(w)
+                comp.append(w)
+                if w == v:
+                    break
+            if len(comp) > 1:
+                out.append(sorted(comp))
+
+    for v in sorted(graph):
+        if v not in index:
+            visit(v)
+    return sorted(out)
+
+
 def compute_queue(ready_label):
     issues = gh_json([
         "issue", "list", "--repo", repo, "--state", "open",
@@ -282,9 +324,26 @@ def compute_queue(ready_label):
 
     ready_nums = {c["n"] for c in candidates}
 
+    # A dep cycle can never resolve on its own: it is a mis-scoped body
+    # (usually a prose mention parsed as a dep). Say so loudly and park the
+    # members with a reason a human can act on.
+    cycle_of = {}
+    for comp in dependency_cycles({c["n"]: c["deps"] for c in candidates}):
+        members = ",".join(f"#{n}" for n in comp)
+        sys.stderr.write(
+            f"WARNING: dependency cycle among ready issues in {repo}: {members} "
+            "— fix their '## Depends on' sections; deferring them\n"
+        )
+        for n in comp:
+            cycle_of[n] = members
+
     pickable = []
     deferred = []
     for c in candidates:
+        if c["n"] in cycle_of:
+            c["block_reason"] = f"cycle({cycle_of[c['n']]})"
+            deferred.append(c)
+            continue
         blocking = []
         statuses = {}
         for d in sorted(c["deps"]):

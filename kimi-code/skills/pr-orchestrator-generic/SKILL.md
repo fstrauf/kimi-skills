@@ -229,7 +229,7 @@ These override any other instruction in this skill or any invoked skill:
 `pr-loop` does **not** ship issues in random open order. `ready_label_candidates` in `loop-common.sh`:
 
 1. Only `ready` (skips `blocked` / `agent-*` / Epics).
-2. Parses `## Depends on` / `Depends on: #N` from the issue body.
+2. Parses `## Depends on` (authoritative when present) or a line starting `Depends on: #N` — rules in [docs/github-loop.md](../../../docs/github-loop.md). Cycles are logged and deferred.
 3. **Topological sort** among ready issues (priority, then **continue an unmerged stack** before unrelated same-P work, then issue number).
 4. Defers a ready issue if an open dependency is not closed, not `ready`, and not `awaiting-merge` / open-PR (those stack through).
 5. “Does this issue already have a PR?” uses `pr_chain` (`Closes`/`Fixes`/`Resolves #N` or `feature/<N>-`). Never GitHub search `Closes #N in:body` (token-AND false positives).
