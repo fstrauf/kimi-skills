@@ -55,12 +55,47 @@ class ParseDependsOnTest(unittest.TestCase):
         body = "## Notes\n\nDo not start until #210 lands.\n"
         self.assertEqual(self.parse(body), {210})
 
-    def test_none_section_does_not_shield_real_prose_deps(self):
+    def test_section_is_authoritative_over_strong_prose(self):
+        # The section is the only dep source once present — even strong prose.
         body = (
             "## Depends on\n\n_None_\n\n"
             "## Notes\n\nBlocked until #211 merges.\n"
         )
-        self.assertEqual(self.parse(body), {211})
+        self.assertEqual(self.parse(body), set())
+
+    def test_447_sentence_without_section_is_not_a_dep(self):
+        # fstrauf/coffee #447: "#454 depends on it" names a DEPENDENT, and
+        # #449/#450 on the same line were parsed as deps -> #447<->#450 cycle.
+        body = (
+            "**P1** — this is the measurement primitive for the consumer lane. "
+            "#454 depends on it, and #449/#450 ship consumer work on top.\n"
+        )
+        self.assertEqual(self.parse(body, self_n=447), set())
+
+    def test_447_body_none_section_plus_prose_mention(self):
+        body = (
+            "**P1** — this is the measurement primitive for the consumer lane. "
+            "#454 depends on it, and #449/#450 ship consumer work on top.\n\n"
+            "## Depends on\n\n_None_\n\n"
+            "## Notes\n\nDepends on: #12 was dropped during scoping.\n"
+        )
+        self.assertEqual(self.parse(body, self_n=447), set())
+
+    def test_explicit_depends_on_line_without_section(self):
+        body = "Context first.\n\nDepends on: #12\n\nMore notes mention #99.\n"
+        self.assertEqual(self.parse(body), {12})
+
+    def test_explicit_depends_on_line_no_colon_and_list(self):
+        self.assertEqual(self.parse("Depends on #12\n"), {12})
+        self.assertEqual(self.parse("- **Depends on:** #12, #13 and #14\n"), {12, 13, 14})
+
+    def test_explicit_line_trailing_mentions_are_not_deps(self):
+        body = "Depends on: #12 — see PR #281 and #282\n"
+        self.assertEqual(self.parse(body), {12})
+
+    def test_mid_line_depends_on_is_not_a_dep(self):
+        body = "This work depends on #12 landing first.\n"
+        self.assertEqual(self.parse(body), set())
 
     def test_self_reference_discarded(self):
         body = "## Depends on\n\n- #999\n- #110\n"
@@ -440,6 +475,77 @@ class ComputeQueueOrderTest(unittest.TestCase):
         reasons = {c["n"]: c["block_reason"] for c in deferred}
         self.assertIn("273", reasons[274])
         self.assertIn("274(deferred)", reasons[276])
+
+    def test_dependency_cycle_is_deferred_loudly(self):
+        """#447<->#450 cycle: both deferred with a cycle reason + stderr warning."""
+        issues = [
+            {
+                "number": 447,
+                "title": "Measurement primitive",
+                "labels": [{"name": "ready"}, {"name": "priority/P1"}],
+                "body": "## Depends on\n\n- #450\n",
+            },
+            {
+                "number": 450,
+                "title": "Consumer work",
+                "labels": [{"name": "ready"}, {"name": "priority/P1"}],
+                "body": "## Depends on\n\n- #447\n",
+            },
+            {
+                "number": 451,
+                "title": "Stacks on the cycle",
+                "labels": [{"name": "ready"}, {"name": "priority/P1"}],
+                "body": "## Depends on\n\n- #450\n",
+            },
+            {
+                "number": 460,
+                "title": "Independent",
+                "labels": [{"name": "ready"}, {"name": "priority/P2"}],
+                "body": "## Depends on\n\n_None_\n",
+            },
+        ]
+        for n in (447, 450):
+            ready_queue.state_cache[n] = {
+                "number": n, "state": "OPEN",
+                "labels": [{"name": "ready"}], "title": "",
+            }
+        ready_queue._pr_index = {}
+        orig = ready_queue.gh_json
+
+        def fake(args):
+            if args[:2] == ["issue", "list"]:
+                return issues
+            raise AssertionError(args)
+
+        ready_queue.gh_json = fake
+        err = io.StringIO()
+        orig_err = sys.stderr
+        sys.stderr = err
+        try:
+            ordered, deferred = ready_queue.compute_queue("ready")
+        finally:
+            sys.stderr = orig_err
+            ready_queue.gh_json = orig
+            ready_queue._pr_index = None
+        self.assertEqual([c["n"] for c in ordered], [460])
+        reasons = {c["n"]: c["block_reason"] for c in deferred}
+        self.assertEqual(reasons[447], "cycle(#447,#450)")
+        self.assertEqual(reasons[450], "cycle(#447,#450)")
+        self.assertEqual(reasons[451], "#450(deferred)")
+        self.assertIn("dependency cycle", err.getvalue())
+        self.assertIn("#447,#450", err.getvalue())
+
+
+class DependencyCyclesTest(unittest.TestCase):
+    def test_no_cycle(self):
+        self.assertEqual(ready_queue.dependency_cycles({1: set(), 2: {1}, 3: {2}}), [])
+
+    def test_edges_outside_graph_ignored(self):
+        self.assertEqual(ready_queue.dependency_cycles({1: {99}, 2: {1}}), [])
+
+    def test_three_cycle_and_two_cycle(self):
+        g = {1: {2}, 2: {3}, 3: {1}, 5: {6}, 6: {5}, 7: {1}}
+        self.assertEqual(ready_queue.dependency_cycles(g), [[1, 2, 3], [5, 6]])
 
 
 if __name__ == "__main__":
