@@ -68,6 +68,11 @@ Apply the baseline above, plus these explicit review rules:
 - If related updates can leave state half-applied, push for a more atomic structure.
 - Do not over-index on micro-optimizations, but do flag avoidable orchestration complexity that makes the implementation more brittle.
 
+### 8. Test-LOC inflation is a slop signal
+- Default expectation: a PR ships the change plus the verification its scoped issue agreed to — nothing more.
+- If the diff adds far more test code than product code without a scoped justification naming the failure modes covered, treat it as a finding: ask which failure mode each test covers and why an E2E test cannot reach it.
+- Do not reward "100% coverage" PRs. Coverage of AI-generated algorithmic code verifies the thing models already get right, expands LOC by orders of magnitude, and locks behavior down against future change — the failures that matter are second- and third-order system effects, which unit tests do not catch.
+
 ## Primary Review Questions
 
 For every meaningful change, ask:
@@ -107,6 +112,7 @@ Escalate findings when you see:
 - Logic added in the wrong layer/package when it should live somewhere more central.
 - Sequential async flow where obviously independent work could stay simpler and clearer with parallel execution.
 - Partial-update logic that leaves state less atomic than necessary.
+- Test suites growing much faster than the code they verify, especially tests that mirror the implementation rather than cover failure modes named in the scoped issue.
 
 ## Preferred Remedies
 
@@ -188,5 +194,6 @@ Treat these as presumptive blockers unless the author can justify them clearly:
 - The PR solves a local problem by scattering feature checks across shared code.
 - The PR adds an unnecessary abstraction, wrapper, or cast-heavy contract that makes the design more indirect.
 - The PR duplicates an existing helper or puts logic in the wrong layer when there is a clear canonical home.
+- The PR adds unit tests not named in the scoped `## Test plan`, or mock-wiring/tautology tests (call-assert or SQL-substring as the main assertion; constants, defaults, re-exports). Golden fixtures, E2E specs and edits to existing tests are exempt.
 
 If those conditions are not met, leave explicit, actionable feedback and push for a cleaner decomposition.

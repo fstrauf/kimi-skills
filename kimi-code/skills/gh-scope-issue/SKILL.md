@@ -4,7 +4,9 @@ description: >-
   Deep-groom a rough GitHub issue into a build-ready spec: codebase deep dive
   after the initial brain dump, deletion-first simplification, architecture and
   documentation fit, root-cause (not symptom) fix, file matrix, acceptance
-  criteria. REST labels only (scoping → ready). Never implements product code.
+  criteria, and a failure-mode-first test contract (E2E-preferred, verifiable
+  artifact, no post-hoc unit tests). REST labels only (scoping → ready). Never
+  implements product code.
   Use for "scope issue #N", "scope all", or scope-loop.
 ---
 
@@ -203,6 +205,22 @@ Name: violated invariant + `file:line` where invalid state is **created**. If yo
 
 ---
 
+## Test contract (non-negotiable)
+
+Scoping decides **what must be proven**, not just what must be built. Every scoped issue carries a test contract.
+
+**Order of operations:**
+
+1. **Failure modes first.** Before designing the fix, list every way the change could fail — bad input, boundary values, concurrency, partial failure, rollback, regression in the adjacent path. This list goes in the issue body.
+2. **Then design.** The change is the minimal thing that survives the failure-mode + delete passes.
+3. **E2E-first.** Preferred verification is an end-to-end test that exercises the real path (HTTP calls, UI flow, CLI invocation — whatever the user actually touches). E2E tests prove complex features work; they are not coverage padding.
+4. **Verifiable artifact.** Every E2E test must end by producing a repeatable, checkable artifact: a command output, a file, a DB row, an API response snapshot — something a reviewer can re-run and compare. "Tests pass" is not the artifact.
+5. **Default zero new unit tests.** Never write unit tests after the code — tests written post-hoc only mirror what the code does, and AI-generated algorithmic code does not need re-verifying against itself. An isolation test is justified only when the scope names the specific failure mode it covers **and** states why an E2E test cannot drive that case (pure logic, an edge the harness can't reach) — agreed in the scope, before implementation starts. Unnamed "this might be useful" tests are scope creep, not coverage.
+
+If the repo has a documented test convention or ship gate (`AGENTS.md`, test tiers), the plan must fit it — the contract is E2E-first *within* the repo's own gate, not instead of it.
+
+---
+
 ## Five-question filter (in order — record in the issue)
 
 1. **Less dumb requirement** — Restate as user problem, not requested solution. Who hurts? What if we wait 3 months? Are premises still true *in the code*?  
@@ -259,6 +277,7 @@ Do **not** require label `scoping`. Process until empty.
 Before designing:
 
 - Deletion candidates  
+- **Failure modes first** — enumerate every way the change could fail (per Test contract); this becomes the seed of `## Test plan`
 - Minimal surviving design + complexity budget  
 - Explicit **non-goals** (what implementers must not build)  
 - Split check: more than one shippable outcome → propose children, do not mega-scope  
@@ -296,6 +315,12 @@ Prefer **refine** a good ticket over full rewrite. Always include the core secti
 - Compatibility: additive / breaking / migration required
 
 ## File change matrix
+## Test plan
+<!-- Failure modes first (enumerated before the design, per the Test contract).
+     Then the E2E scenario(s) that exercise the real path, each ending in a
+     verifiable, repeatable artifact (command output, file, DB row, response
+     snapshot). Isolation/unit tests only where E2E genuinely cannot reach —
+     derived from the failure-mode list, agreed here before implementation. -->
 ## Non-goals
 ## Acceptance criteria
 ## QA / verification
@@ -317,7 +342,7 @@ Size: S|M|L — <one-line reason>
 | `M` | ≤ 10 files, or crosses one boundary (UI↔API, new column, new endpoint) |
 | `L` | Cross-module, data migration, `API change: yes` breaking, auth/billing/security-sensitive, or an epic child whose stack deps are still open |
 
-Acceptance must include: fix addresses origin (`file:line`), not only the symptom. When `API change: yes`, acceptance must also require that the OpenAPI document describes the intended boundary and that the product repository's documented contract validation passes.
+Acceptance must include: fix addresses origin (`file:line`), not only the symptom. When `API change: yes`, acceptance must also require that the OpenAPI document describes the intended boundary and that the product repository's documented contract validation passes. Acceptance must also require the test plan's E2E artifact(s) to be reproducible by re-running the documented command(s) — and must **not** accept unit tests written after the implementation as the proof of correctness.
 
 ### Phase 7 — Publish (REST only)
 
@@ -350,6 +375,8 @@ Acceptance must include: fix addresses origin (`file:line`), not only the sympto
 - Requiring or inventing an OpenAPI file for work that does not cross an HTTP API boundary  
 - Adding `ready` to epics or delete-candidates  
 - Implementing the feature “to verify” the scope  
+- Scoping an issue without a `## Test plan` — failure modes and E2E artifact are part of the contract, not an afterthought
+- Accepting post-hoc unit tests as proof of correctness — isolation tests come from the failure-mode list, agreed before implementation
 - **`blocked` because a dependency issue is still open or columns are not on main yet** — use `## Depends on` + `ready`  
 - Forcing the human to merge one child, re-run scope-loop, then the next  
 - Epic children that all depend on the same ancestor (sibling PRs). GitHub stacks are a line — each child depends on the **previous** child only.
