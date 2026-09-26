@@ -621,7 +621,7 @@ This is review iteration <iteration> of 3. On iteration 3, any remaining actiona
 
 Focus on these files: <comma-separated paths>
 
-Scoped test plan (from issue #<N>): <paste the issue's ## Test plan section verbatim, or "none">
+Scoped test plan (from issue #<issue_number>): <paste the issue's ## Test plan section verbatim, or "none — a new unit test FAILs unless the PR body justifies it per product AGENTS.md → Tests (a)/(b)/(c)">
 Apply baseline §8: FAIL unit tests the test plan does not name, and mock-wiring/tautology tests; golden fixtures, E2E specs and edits to existing tests are exempt.
 
 You do not have a Skill tool — do NOT attempt to invoke /thermo-nuclear-code-quality-review or /skill:thermo-nuclear-code-quality-review.
