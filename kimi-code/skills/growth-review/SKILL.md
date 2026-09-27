@@ -1,142 +1,147 @@
 ---
 name: growth-review
 description: |
-  Weekly revenue-growth review for daystoexpiry.com (repo /Users/fstrauf/01_code/call-analyzer,
-  PageSeeds project days_to_expiry): pull DB + PostHog Conversion Health deltas, grade open
-  hypotheses, decide ≤3 bets, file tickets, and append the weekly entry to the GitHub growth
-  ledger (issue #1584, body = live summary). Use when the user runs /growth-review, says
-  "growth review", "weekly growth", "revenue check", "how is conversion this week", or the
-  pageseeds operator-runs scheduler fires growth_review.
-  When to use: Triggers on "/growth-review", "growth review", "weekly growth review",
-  "revenue review", "how is conversion", "grade the growth bets", "weekly revenue check".
+  Recurring growth review for any repo that has `.github/automation/growth_review.yaml`
+  (today: call-analyzer / daystoexpiry.com, nz-coffee-hub / brewedlate.com). Pulls
+  north-star deltas (GSC via pageseeds-cli, PostHog, optional read-only DB), runs a free-flow
+  "where are we not serving / not converting" desk, grades open hypotheses, decides ≤3 bets,
+  files tickets, and appends the entry to the project's GitHub growth ledger issue (body =
+  live summary, comments = history). Use when the user runs /growth-review, says
+  "growth review", "weekly growth", "revenue check", "how is conversion", "grade the bets",
+  "how is the SEO/traffic program going", or the pageseeds operator-runs scheduler fires
+  workspace_cmd:growth-review.
 metadata:
-  short-description: "Weekly revenue-growth review + GitHub ledger update"
+  short-description: "Recurring growth review + GitHub ledger update (per-project config)"
 ---
 
-# Growth Review — weekly revenue ledger operator
+# Growth Review — recurring ledger operator
 
-You are the weekly growth operator for **daystoexpiry.com**. The single most important goal is
-revenue growth. Every run answers: what moved, did last week's bets work, what are this week's
-bets — and writes that down so next week's run never starts from amnesia.
+Every run answers: what moved, did the last bets work, what are the next bets — and writes
+that down so the next run never starts from amnesia.
 
-## Fixed facts (do not rediscover)
+## Phase −1 — load project config (do not rediscover facts)
 
-| Fact | Value |
+Read `<cwd>/.github/automation/growth_review.yaml`. If it is missing → STOP and say which
+repo lacks it. Everything project-specific comes from this file:
+
+| Key | Meaning |
 |---|---|
-| Repo | `/Users/fstrauf/01_code/call-analyzer` (GitHub `fstrauf/call-analyzer`) |
-| PageSeeds project | `days_to_expiry` |
-| Ledger | GitHub issue **#1584** (`Epic: Revenue growth program — weekly ledger`) — body = live summary, comments = weekly entries |
-| PostHog | project **227760**, [Conversion Health dashboard](https://us.posthog.com/project/227760/dashboard/2085304) (id `2085304`) |
-| Baseline | 2026-09-11: 1,377 users · 90 connections · 36 active / 20 canceled subs · 1 new sub/30d · signup_completed 23/30d · trial_started 18/30d |
-| Definitions | `webapp/src/lib/analytics/MEASUREMENT_CONTRACT.md` (canonical; follow its funnel/contract rules, never re-invent) |
-| Baseline date | Entry comments are the history; issue body is the truth |
+| `repo` | GitHub `owner/name` for tickets + ledger |
+| `pageseeds_project` | pageseeds-cli project id (GSC desk); omit → no GSC desk |
+| `ledger_issue` | Issue number — body = live summary, comments = entries |
+| `cadence_days` | Intended spacing between entries |
+| `posthog` | `project_id`, optional `dashboard_id` (tiles to run first) |
+| `definitions_doc` | Canonical metric/funnel definitions — follow, never re-invent |
+| `north_stars[]` | `{id, lane, source, note?}` — what the program is graded on |
+| `leading_indicators[]` | `{id, lane, source, note?}` — gradeable proxies each run |
+| `bottleneck_order[]` | Priority order for picking bets until ledger evidence says otherwise |
+| `db` (optional) | `{query_cmd, fallback?, test_account_filter, pulls[]}` — read-only DB desk |
+| `small_n_note` | What volume makes a delta noise; how long a window grading needs |
+| `related_files` (optional) | Repo files to read for context (e.g. `seo_program.yaml`) |
+
+Metric ids should match the existing definitions (`definitions_doc`, or `seo_program.yaml`
+`metrics[]`) — the config lists *which* metrics are graded; it does not redefine them.
 
 ## Hard rails
 
-1. **DB is SELECT-only.** Use `./scripts/db_query_safe.sh "SELECT ..."`. If it fails with
-   `psql: command not found`, use the venv psycopg fallback (script at `/tmp/safe_select.py`
-   pattern: `webapp/.env.local` DATABASE_URL, `conn.read_only = True`, reject non-SELECT).
-   Never data-modifying SQL. Repo `AGENTS.md` safety rules apply at all times.
+1. **Read-only data.** DB access only through `db.query_cmd` (SELECT-only; never
+   data-modifying SQL). The repo's `AGENTS.md` safety rules apply at all times.
 2. **Never fabricate numbers.** A source that fails → report "unavailable" and continue;
    missing data is itself a finding.
-3. **Small-N honesty.** At ~1–2 subs/month, weekly revenue deltas are noise. Grade leading
-   indicators weekly (trial starts, `checkout_started` volume, trial→checkout rate, signup
-   completion, activation); judge revenue only on 4-week windows. Say when N is too small.
-4. **One bet per funnel stage per week.** Overlapping changes at this volume are ungradeable.
-5. **Bottleneck order** (until the ledger's evidence says otherwise): (1) conversion
-   suppressors, (2) prove the money path end-to-end, (3) trial→paid experiments, (4)
-   acquisition (weekly-seo's lane — never duplicate it).
+3. **Small-N honesty.** Apply `small_n_note`. Grade leading indicators each run; judge
+   north stars only on windows long enough to mean something. Say when N is too small —
+   `unknown` is an honest grade.
+4. **One bet per funnel stage / lane per run.** Overlapping changes are ungradeable.
+5. **Bottleneck order** from the config, until the ledger's evidence says otherwise.
 6. **No code changes.** This skill observes, grades, files tickets, writes the ledger.
-   Implementation happens through the normal ticket → scope-loop → pr-loop machinery.
-7. **Tickets:** `gh issue create` with `bug` or `enhancement` + `priority/P*`. Never `ready`
-   (scope-loop owns that). Each bet ticket must contain: the hypothesis, expected metric
-   movement, and check date. Epics (`Epic:` title) are never scoped/shipped.
-8. **PostHog MCP discipline:** follow its schema rules (info/schema drill-down,
-   `read-data-schema` before querying events, `filterTestAccounts: true` on every query).
+   Implementation happens through ticket → scope-loop → pr-loop.
+7. **Tickets:** `gh issue create -R <repo>` with `bug` or `enhancement` + `priority/P*`.
+   Never `ready` (scope-loop owns that). Each bet ticket contains: hypothesis, **lane**,
+   **metric id** (from `north_stars` / `leading_indicators`), expected movement, check date.
+   Epics (`Epic:` title) are never scoped/shipped.
+8. **PostHog MCP discipline:** info/schema drill-down, `read-data-schema` before querying
+   events, `filterTestAccounts: true` on every query.
+9. **Don't duplicate weekly-seo.** Page-level SEO tactics (CTR rewrites, refreshes,
+   merges, per-page outcome reviews) belong to `/weekly-seo`. This skill reads its output
+   and bets at the program level.
 
 ## Phases
 
 ### Phase 0 — spacing gate
 
-- Fetch the ledger: `gh issue view 1584 --repo fstrauf/call-analyzer --json body,comments`.
-- If the newest comment entry is **< 5 days** old → STOP and say so (idempotent re-run
-  guard). Override only when the user explicitly says "force" / "override"; log the override.
+- `gh issue view <ledger_issue> -R <repo> --json body,comments`.
+- If the newest entry comment is **younger than `cadence_days − 2` days** → STOP and say so
+  (idempotent re-run guard). Override only when the user explicitly says "force" /
+  "override"; log the override in the entry.
 
 ### Phase 1 — data pull (deltas)
 
-1. **DB delta** (read-only): total users, users last 7d, broker connections ever,
-   subs by status (active / canceled / trialing), new subs last 30d, onboarding completions.
-   Every user/subscription/connection count **excludes test accounts** using the contract
-   SQL — definition lives in `MEASUREMENT_CONTRACT.md` → "Test-account patterns —
-   DB / ops queries"; do not re-derive it. Substring semantics, lowercase:
+Run one desk per source present in the config; skip the rest.
 
-   ```sql
-   lower(email) LIKE '%@example.com' OR lower(email) LIKE '%@test.com'
-   OR lower(email) LIKE '%fi-e2e-%' OR lower(email) LIKE '%test-trial-%'
-   ```
+1. **GSC desk** (`pageseeds_project` set): `pageseeds-cli gsc-performance`, `gsc-movers`,
+   `gsc-queries`, `ctr-outcomes`, `site-overview` for the project (`--help` for flags;
+   28d vs previous 28d). Pull the rows behind every gsc-sourced metric id.
+2. **PostHog desk:** if `posthog.dashboard_id` → run its tiles first
+   (`dashboard-insights-run`); re-run uncomputed tiles via trends/funnels/paths using the
+   definitions in `definitions_doc`. Pull every posthog-sourced metric id.
+3. **DB desk** (`db` set): run `db.pulls[]` through `db.query_cmd`, always applying
+   `db.test_account_filter`. If `query_cmd` fails, use `db.fallback`.
+4. **Existing loop state:** read `.github/automation/weekly_outcome_latest.json` (if
+   present) and `related_files` (e.g. `seo_program.yaml` items with `status: measuring`) so
+   you build on weekly-seo's verdicts instead of re-measuring them.
+5. Compare to the baseline in the issue body and to the last entry. Produce a compact
+   delta table: `metric id · lane · baseline · last entry · now`.
 
-   Use as `AND NOT (<patterns>)` on `options.users`; for child tables (subscriptions,
-   broker connections) join `options.users` on `user_id` and filter the joined email.
-   Run each count unfiltered once in a while to monitor test-share drift (roughly 4× today).
-   Also pull cap hits (issue #1669, cap-hit definition in the contract — never grade from
-   CTA clicks): distinct cap-reaching `anon_id`s, 90d, per feature:
+### Phase 1b — free-flow desk (bet candidates, not a report dump)
 
-   ```sql
-   SELECT feature_key, count(DISTINCT anon_id) AS cap_hitters_90d
-   FROM options.feature_usage
-   WHERE
-     (feature_key IN ('covered_calls','cash_secured_puts','call_buying','wheel_backtest')
-        AND usage_date >= (now() - interval '90 days')::date AND count >= 10)
-     OR
-     (feature_key IN ('leaps','ib_portfolio','iron_condor','wheel')
-        AND updated_at >= now() - interval '90 days' AND count >= 3)
-   GROUP BY 1 ORDER BY 2 DESC;
-   ```
+Answer each with evidence (numbers + URLs/queries), ≤5 bullets each. Skip a question whose
+source desk is absent.
 
-   Anonymous rows carry no test signal; read cap-hit counts directionally.
-2. **PostHog delta:** run the Conversion Health dashboard tiles
-   (`dashboard-insights-run` on `2085304`) and pull each tile's current numbers. If tiles are
-   uncomputed, re-run the underlying queries via `query-trends` / `query-funnel` with the
-   exact definitions from `MEASUREMENT_CONTRACT.md`. Include `checkout_started` /
-   `subscription_payment_failed` explicitly — the checkout pipeline being live-or-dead is a
-   standing question until #1583 closes.
-3. Compare to the baseline in the issue body and to last week's entry. Produce a compact
-   delta table (metric · baseline · last week · now).
+1. **Demand we don't serve:** high-impression queries with no matching page, or page-1
+   positions with ~0 clicks.
+2. **Rank but no click:** CTR far below what the position implies, at program level
+   (patterns across a cluster), not single-page title tweaks.
+3. **Land but no next step:** PostHog paths from landing groups to the lane's conversion
+   event (signup, outbound click, checkout…); bounce and pages/session by landing group.
+
+Findings become candidates for Phase 3. Anything page-tactical → note it for weekly-seo.
 
 ### Phase 2 — grade hypotheses
 
-- For every open bet in the issue body's "Hypotheses in flight" table: check its ticket
-  state (`gh issue view <n>`), check whether the change deployed (`git log --all --grep="#<n>"`),
-  and grade the expected metric movement against Phase 1 data: `hit` / `miss` / `unknown`
-  (unknown is honest at small N).
+- For every open bet in the body's "Hypotheses in flight" table: check its ticket state
+  (`gh issue view <n> -R <repo>`), whether it deployed (`git log --all --grep="#<n>"`), and
+  grade the named metric id against Phase 1 data: `hit` / `miss` / `unknown`.
+- Check date not reached → `pending` (still record the current reading).
 - New evidence beats optimism. A `miss` gets a "what next" note (iterate, revert, or park).
 
-### Phase 3 — this week's bets (≤3)
+### Phase 3 — next bets (≤3)
 
-- Pick from the bottleneck order in rail 5. Sources: open grades, Conversion Health tiles,
-  existing P1/P2 tickets in the repo (`gh issue list`), fresh anomalies.
-- For each bet: hypothesis, expected movement + check date, ticket (file new or reference
+- Pick from `bottleneck_order`, using open grades, Phase 1b candidates, existing P1/P2
+  tickets (`gh issue list -R <repo>`), and fresh anomalies.
+- Each bet: hypothesis, lane, metric id, expected movement, check date, ticket (new or
   existing). Prefer fewer, sharper bets.
 
 ### Phase 4 — ledger write
 
-1. **Comment** on #1584 with the weekly entry: `### Entry #N — <date>` containing delta table,
-   graded bets, new bets, and a 2–3 line "learning" paragraph. This is the history.
-2. **Update the issue body** (`gh issue edit 1584 --body`): refresh *Current summary* — last
-   run / next run due dates, the hypotheses table (verdicts + new bets), latest numbers vs
-   baseline. Keep the baseline table and "How the ledger works" intact. The body must stay
-   readable without opening the comments.
+1. **Comment** on the ledger issue: `### Entry #N — <date>` with delta table, Phase 1b
+   top findings (≤5 lines), graded bets, new bets, and a 2–3 line "learning" paragraph.
+   This is the history.
+2. **Update the issue body** (`gh issue edit <ledger_issue> -R <repo> --body-file …`):
+   refresh *Current summary* — last run / next run due (`+cadence_days`), the hypotheses
+   table (verdicts + new bets), latest numbers vs baseline. Keep the baseline table and
+   "How the ledger works" intact. The body must stay readable without the comments.
 
 ### Phase 5 — report
 
-End with a compact summary to the user: deltas that matter, verdicts, this week's bets with
-ticket links, and anything needing a human decision.
+End with a compact summary: deltas that matter, verdicts, next bets with ticket links, and
+anything needing a human decision.
 
 ## Relationship to other skills
 
-- `/weekly-seo` — acquisition lane; do not duplicate its desks. Read its latest
-  `.github/automation/weekly_seo_*.md` only if an acquisition-side anomaly explains a delta.
-- `/posthog-weekly-insights` — product-behavior deep dive; use its output as bet input, but
-  this skill owns the revenue ledger and the weekly cadence.
-- Scheduler: `pageseeds-cli operator-runs` fires this skill weekly (project `days_to_expiry`).
-  Interactive runs: just say "run the growth review".
+- `/weekly-seo` — tactical page-level SEO loop with its own per-page outcome reviews.
+  Input to this skill; never duplicated by it.
+- `/seo-program-review` — monthly `seo_program.yaml` rebalance; reads this ledger's body.
+- `/posthog-weekly-insights` — product-behaviour deep dive; its output is bet input.
+- Scheduler: `pageseeds-cli operator-runs enable -i <project> --skill
+  workspace_cmd:growth-review --every <cadence_days>d --cmd "… -p '/growth-review'"`, run
+  from the product repo so the config resolves. Interactive: "run the growth review".
