@@ -103,32 +103,46 @@ Present a compact tiered summary, largest first, grouped as:
   Trash. For sessions, always show the `prune-sessions.sh` dry-run before offering
   apply. State sizes; require explicit threshold (e.g. “sessions older than 3 days”).
 
+The scan's **UNCATALOGUED CACHES** section lists any `~/.*`, `~/.cache/*` or
+`~/Library/Caches/*` entry over 100 MB that is not in the hand-picked lists. Surface
+those as Tier 3 candidates and ask; do not assume they are regenerable.
+
 Note anything unusual (e.g. a single directory dominating the disk — often
 `~/.grok/sessions` for heavy Grok users).
 
 ### Worktrees (from `GIT / AI WORKTREES` scan section)
 
-`scan.sh` reports three sources:
+Linked worktrees — including Claude Code's `<repo>/.claude/worktrees/*` in **every**
+repo under `CODE_ROOTS` — are classified by `worktree_gc.py` (also run inside
+`scan.sh`). **Use its verdict; never judge a worktree by size or `clean` alone** —
+an in-flight PR branch is clean too.
 
-1. **AI-tool isolates** — `~/.grok/worktrees`, `~/.cursor/worktrees`,
-   `~/.claude/worktrees`, `~/.codex/worktrees`, `~/.kimi-code/worktrees`
-   (often *full clones*, not linked worktrees).
-2. **Linked worktrees** — multi-worktree repos under `CODE_ROOTS`
-   (default: `~/01_code`, `~/code`, `~/src`, `~/dev`, `~/Projects`, `~/projects`;
-   override with `CODE_ROOTS="..." bash scan.sh`).
-3. **Ephemeral `/tmp` checkouts** — leftover batch/agent trees under
-   `/tmp` or `/private/tmp`.
+| Verdict | Meaning | Offer for removal? |
+|---------|---------|--------------------|
+| `SAFE` | clean, idle, fully merged (ancestor of default branch, or PR merged/closed), or a stale registration whose directory is gone | Yes, after confirmation |
+| `REVIEW` | clean + idle + pushed, but unmerged with no PR record | Only with a separate explicit yes per path |
+| `KEEP` | primary, locked, dirty, rebase/merge in progress, open PR, commits on no remote, live process cwd, or any activity (commit / git metadata / Claude session transcript) within `IDLE_DAYS` (default 2) | Never. Report the reason |
 
-When proposing cleanup, prefer candidates that are **all** of:
+If `gh` is unavailable, every unmerged branch is `KEEP` (fail closed).
 
-- not marked `PRIMARY` (never offer the main repo checkout)
-- `clean` (or dirty only with generated/deleted noise the user agrees is junk)
-- under `.tmp/`, `/tmp`, `/private/tmp`, or an AI-tool worktrees root
-- and/or detached HEAD pointing at already-merged work
+```bash
+python3 <skill-dir>/worktree_gc.py                      # report only
+IDLE_DAYS=1 python3 <skill-dir>/worktree_gc.py          # shorter idle window
+python3 <skill-dir>/worktree_gc.py --apply PATH...      # removes only paths still SAFE
+python3 <skill-dir>/worktree_gc.py --apply PATH... --include-review
+```
 
-**Do not auto-offer** worktrees that are clean-but-active feature branches for
-open PRs, or anything dirty with real source edits, without calling that out
-explicitly and getting a separate yes.
+`--apply` re-classifies at delete time (so a worktree that became active since the
+scan is refused), runs `git worktree remove` + `prune`, then `git branch -d` (which
+refuses unmerged branches). Orphan dirs in `.claude/worktrees` that git does not know
+about are report-only; inspect before any `rm -rf`.
+
+Most disk in `KEEP` worktrees is a per-worktree `node_modules`/`.next`. That cannot be
+reclaimed while the work is active; say so rather than loosening the rules.
+
+Other worktree sources the scan still lists: AI-tool isolates (`~/.grok/worktrees`,
+`~/.cursor/worktrees`, `~/.codex/worktrees`, `~/.kimi-code/worktrees`; often full
+clones) and ephemeral `/tmp` checkouts. Only offer those that are clean and idle.
 
 **Grok worktrees:** prefer the official CLI over raw `rm -rf`:
 
@@ -174,11 +188,12 @@ Standard clean commands per category:
 | pnpm | `pnpm store prune` |
 | yarn | `yarn cache clean` |
 | Homebrew | `brew cleanup --prune=all && brew autoremove` |
-| cargo registry | `cargo cache -a` if `cargo-cache` is installed; otherwise skip and say so |
+| cargo registry | `cargo cache -a` if `cargo-cache` is installed; otherwise `rm -rf` the exact `~/.cargo/registry/cache` and `~/.cargo/registry/src` paths from the scan (both regenerate) |
+| NuGet / cargo-xwin / codex-runtimes / node-gyp / unused rustup toolchains | `dotnet nuget locals all --clear`; `rm -rf` the exact scan path for the others; `rustup toolchain uninstall <name>` |
 | go | `go clean -cache -modcache` |
 | Stale `node_modules`/`.next`/`target` | `rm -rf` the exact confirmed paths from the scan |
 | VS Code caches | `rm -rf` the confirmed `Cache` / `CachedData` / `CachedExtensionVSIXs` / `logs` / `Crashpad` dirs only |
-| Linked git worktree | `git -C <primary-repo> worktree remove --force <path>` then `git -C <primary-repo> worktree prune`. If remove fails with "Directory not empty", `rm -rf <path>` then `worktree prune`. Never remove the PRIMARY path. |
+| Linked git worktree (SAFE/REVIEW only) | `python3 <skill-dir>/worktree_gc.py --apply <exact path>` (add `--include-review` for REVIEW). Never hand-roll `git worktree remove --force`. |
 | AI-tool full-clone worktree | Prefer `grok worktree gc -f` for Grok; otherwise `rm -rf` the exact confirmed path under `~/.grok/worktrees` (etc.) from the scan — these are not registered with the main repo. |
 | **Grok sessions (+ optional worktrees/downloads)** | `DAYS=<N> GROK_WORKTREE_GC=1 GROK_DOWNLOADS=1 bash <skill-dir>/prune-sessions.sh --apply` after dry-run confirmation |
 | Other AI sessions only | `DAYS=<N> bash <skill-dir>/prune-sessions.sh --apply` |
