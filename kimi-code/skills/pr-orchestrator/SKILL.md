@@ -284,6 +284,12 @@ If the content-only fast path was used (Phase 5 step 0), replace the test line w
 - Respect project-specific test commands from `AGENTS.md` when they differ from `pnpm test:all`.
 - Prefer worktree-isolated implementers when the host supports them so the main workspace stays clean (Ori supports `spawn_agent` for isolation).
 - Never invent market data; empty/error results over synthetic chains.
+- **Data repairs** (the issue also fixes existing rows):
+  - Implement the `RepairSpec` the issue scopes, in `ops/repairs/<name>.py`. The lifecycle is in `ops/README.md`.
+  - Never add a standalone `--apply` script, and never put a prose dry-run/apply checklist in the PR body. The release PR lists new specs automatically.
+  - Agents may run `uv run python ops/repair.py plan|verify` (read-only session) and paste the output as the PR's artifact.
+  - **Never run `apply`**, or any legacy `--apply` / `--execute` flag. A human runs it after deploy; "done" means `verify <name>` exits 0.
+  - Tests use the rolled-back-transaction pattern with synthetic users (`tests/integration/test_repair_runner.py`).
 
 ## Output expectations
 

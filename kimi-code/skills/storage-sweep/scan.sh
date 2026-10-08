@@ -46,6 +46,22 @@ sz "$HOME_DIR/.cache/ms-playwright" "Playwright browsers"
 sz "$HOME_DIR/.cache/puppeteer" "Puppeteer browsers"
 sz "$HOME_DIR/Library/Caches/com.microsoft.VSCode.ShipIt" "VS Code updater cache"
 sz "$HOME_DIR/Library/Caches/typescript" "TypeScript cache"
+sz "$HOME_DIR/.cargo/registry/cache" "cargo registry .crate archives (regenerable)"
+sz "$HOME_DIR/.cargo/registry/src" "cargo registry unpacked sources (regenerable)"
+sz "$HOME_DIR/Library/Caches/cargo-xwin" "cargo-xwin (Windows SDK/CRT download cache)"
+sz "$HOME_DIR/.nuget/packages" "NuGet packages (regenerable via dotnet restore)"
+sz "$HOME_DIR/.dotnet" "dotnet (SDK telemetry/tools; REVIEW)"
+sz "$HOME_DIR/.cache/codex-runtimes" "Codex runtimes (re-downloaded on demand)"
+sz "$HOME_DIR/Library/Caches/node-gyp" "node-gyp headers"
+sz "$HOME_DIR/.cache/node" "node corepack/cache"
+sz "$HOME_DIR/.cache/huggingface" "HuggingFace models (REVIEW; slow to re-download)"
+sz "$HOME_DIR/.cache/whisper-cpp" "whisper.cpp models (REVIEW)"
+sz "$HOME_DIR/Library/Caches/Google" "Chrome/Google caches"
+sz "$HOME_DIR/.npm/_npx" "npx cache"
+if command -v rustup >/dev/null 2>&1; then
+  echo "(rustup toolchains — remove unused with: rustup toolchain uninstall <name>)"
+  du -sh "$HOME_DIR"/.rustup/toolchains/* 2>/dev/null
+fi
 
 hr "STALE PROJECT ARTIFACTS (node_modules / .next / target, untouched > ${STALE_DAYS}d)"
 find "$HOME_DIR" \
@@ -159,6 +175,15 @@ for label, _, _ in buckets:
 PY
 fi
 
+hr "UNCATALOGUED CACHES (anything >100MB not listed above)"
+# Generic discovery so new tools' caches surface without editing this script.
+du -sk "$HOME_DIR"/.[!.]* "$HOME_DIR"/.cache/* "$HOME_DIR"/Library/Caches/* \
+      "$HOME_DIR"/Library/Application\ Support/*/Cache* 2>/dev/null \
+  | awk '$1 >= 102400' | sort -rn | head -25 \
+  | while read -r kb path; do
+      printf '%-8s %s\n' "$(awk -v k="$kb" 'BEGIN{if(k>=1048576)printf "%.1fG",k/1048576;else printf "%.0fM",k/1024}')" "$path"
+    done
+
 hr "XCODE LEFTOVERS"
 sz "$HOME_DIR/Library/Developer/Xcode/DerivedData" "DerivedData"
 sz "$HOME_DIR/Library/Developer/CoreSimulator" "CoreSimulator"
@@ -202,37 +227,13 @@ do
   fi
 done
 
-# Linked worktrees on repos under common code roots (multi-worktree only).
-CODE_ROOTS="${CODE_ROOTS:-$HOME_DIR/01_code $HOME_DIR/code $HOME_DIR/src $HOME_DIR/dev $HOME_DIR/Projects $HOME_DIR/projects}"
+# Linked worktrees (incl. Claude Code's <repo>/.claude/worktrees) are classified
+# by worktree_gc.py: SAFE / REVIEW / KEEP with reasons (live process, recent
+# activity, open PR, unpushed commits, dirty). Never judge worktrees by size or
+# "clean" alone -- active PR branches are clean too.
 echo ""
-echo "(linked worktrees under CODE_ROOTS; multi-worktree repos only)"
-for code_root in $CODE_ROOTS; do
-  [ -d "$code_root" ] || continue
-  # Primary repos only: .git as a *directory* (skip worktree .git files).
-  find "$code_root" -maxdepth 4 -type d -name .git 2>/dev/null | while IFS= read -r gitpath; do
-    repo=$(dirname "$gitpath")
-    case "$repo" in
-      */node_modules/*|*/.venv/*|*/.next/*|*/.tmp/*) continue ;;
-    esac
-    command -v git >/dev/null 2>&1 || continue
-    # Count worktrees; skip single-checkout repos.
-    n=$(git -C "$repo" worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)
-    [ "${n:-0}" -gt 1 ] || continue
-    echo "--- $repo ($n worktrees) ---"
-    git -C "$repo" worktree list 2>/dev/null | while IFS= read -r wtline; do
-      wtpath=$(printf '%s\n' "$wtline" | awk '{print $1}')
-      [ -n "$wtpath" ] || continue
-      size=$(du -sh "$wtpath" 2>/dev/null | cut -f1)
-      dirty_n=$(git -C "$wtpath" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-      dirty_flag="clean"
-      [ "${dirty_n:-0}" -gt 0 ] 2>/dev/null && dirty_flag="dirty:${dirty_n}"
-      primary=""
-      [ "$wtpath" = "$repo" ] && primary=" PRIMARY"
-      rest=$(printf '%s\n' "$wtline" | awk '{$1=""; sub(/^ /,""); print}')
-      printf '%-10s %-10s %s  %s%s\n' "${size:-?}" "$dirty_flag" "$wtpath" "$rest" "$primary"
-    done
-  done
-done
+echo "(linked worktrees under CODE_ROOTS — classified; read-only)"
+python3 "$(dirname "$0")/worktree_gc.py" ${CODE_ROOTS:+--roots $CODE_ROOTS} 2>&1 || echo "worktree_gc.py failed"
 
 # Ephemeral checkouts under /tmp (often leftover batch/agent worktrees).
 echo ""

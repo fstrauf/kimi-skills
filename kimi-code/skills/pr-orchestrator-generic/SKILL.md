@@ -435,7 +435,7 @@ Required semantics:
     - Relevant file paths
     - Follow `AGENTS.md`; minimal scoped changes
     - If the issue declares `API change: yes`, update the named OpenAPI file and implementation together; preserve the declared compatibility behavior
-    - Targeted tests only if needed; **do not** run `pnpm test:all` / full build
+    - Tests: implement exactly the scoped issue's `## Test plan` / `## QA / verification` contract — nothing more. The E2E artifact named there is the proof of correctness. **Do not add unit tests beyond what the scope agreed**, and add none at all when the contract names none. Targeted runs only; **do not** run `pnpm test:all` / full build
     - Return summary of changes, commit SHAs if any, open questions
 
    **Kimi:** `Agent` coder; non-interactive → background + `TaskOutput(block=true)`.
@@ -621,6 +621,9 @@ This is review iteration <iteration> of 3. On iteration 3, any remaining actiona
 
 Focus on these files: <comma-separated paths>
 
+Scoped test plan (from issue #<issue_number>): <paste the issue's ## Test plan section verbatim, or "none — a new unit test FAILs unless the PR body justifies it per product AGENTS.md → Tests (a)/(b)/(c)">
+Apply baseline §8: FAIL unit tests the test plan does not name, and mock-wiring/tautology tests; golden fixtures, E2E specs and edits to existing tests are exempt.
+
 You do not have a Skill tool — do NOT attempt to invoke /thermo-nuclear-code-quality-review or /skill:thermo-nuclear-code-quality-review.
 Instead, use your host's read-file tool to read this file IN FULL before inspecting the diff; it is the review baseline you must apply rigorously:
 <baseline_path>
@@ -666,6 +669,7 @@ Read the latest review comments with: gh pr view <pr_number> --comments
 Focus on comments marked "<!-- thermonuclear-review-iter-<iteration> -->".
 
 Do not change behavior. Make minimal, structural improvements as requested.
+Do not add unit tests beyond the issue's `## Test plan`.
 Do NOT run pnpm test:all, pnpm build, or any full test/build suite. Only make the requested code changes.
 Commit and push your changes.
 If this branch is part of a GitHub stack (gh stack), push with: gh stack push
