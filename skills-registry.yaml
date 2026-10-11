@@ -36,6 +36,9 @@ root_links:
   # Claude Code subagents for the loop (model/effort per role — see routing.py)
   - path: ~/.claude/agents
     target: ~/01_code/kimi-skills/claude/agents
+  # Global Claude Code memory: the scope -> ship workflow
+  - path: ~/.claude/CLAUDE.md
+    target: ~/01_code/kimi-skills/claude/CLAUDE.md
 
 # Grok should load universal tree (config check is advisory)
 grok_config:

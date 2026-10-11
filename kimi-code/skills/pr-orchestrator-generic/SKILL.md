@@ -9,7 +9,7 @@ description: >-
 when-to-use: >-
   Triggers on "/pr-orchestrator-generic", "/skill:pr-orchestrator-generic",
   "ship issue with generic orchestrator", or the loop-ready-issues.sh runner.
-argument-hint: "<issue-number>"
+argument-hint: "<issue-number> [<issue-number>...] [--parallel|--serial]"
 ---
 
 # PR Orchestrator (Generic) — Kimi + Grok + Ori + Claude
@@ -119,6 +119,15 @@ For in-process Ori orchestration, prefer `task` with a `result_schema` for imple
 - You have a GitHub issue to implement and ship in **any** repo that uses `pnpm test:all` (or documents an equivalent ship gate).
 - You want implement → draft PR → thermonuclear review → fix loop → tests → mark ready, automated.
 - Interactive or headless (`kimi -p` / `grok -p` / `claude -p` / `loop-ready-issues.sh`). Ori: use `spawn_agent` to invoke this skill as a subagent task.
+
+## Several issues (interactive coordinator)
+
+`/pr-orchestrator-generic 12 14 15 --parallel` (default `--serial`): this session is the **coordinator** and ships each issue through the phases below.
+
+- `--serial`: one issue at a time, in the order given.
+- `--parallel`: one subagent per issue, each on its own branch (Claude: `Agent` with `isolation: "worktree"`, spawned together). Each runs this skill for its single issue.
+- An issue whose `## Depends on` names another issue in the batch is never parallel with it. Ship the dependency first, then stack (see [docs/github-loop.md](../../../docs/github-loop.md)).
+- Report one line per issue at the end: PR URL or `needs-input` / `failed` with the reason.
 
 ## Invocation
 
