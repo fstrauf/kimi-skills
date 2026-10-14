@@ -1,7 +1,7 @@
 ---
 name: loop-explorer
 description: Read-only code search for the scope/ship loop. Finds call paths, existing modules, and file:line evidence, and returns conclusions, not file dumps. Use for any "where / does X already exist" question during scoping or implementation.
-model: haiku
+model: sonnet
 effort: low
 tools: Read, Grep, Glob, Bash
 ---
