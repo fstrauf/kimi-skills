@@ -140,18 +140,16 @@ if [ -n "$resume_line" ]; then
 fi
 export RESUME_PHASE RESUME_ATTEMPT RESUME_PR RESUME_HEAD
 
-# Cost routing (routing.py): size from the scoped body, attempt = failed runs + 1.
+# Cost routing (routing.py): attempt = failed runs + 1.
 # No-op for single-model hosts (empty args). Subagent routes are asked by the skill.
 ROUTING_PY="$WORKER_SCRIPT_DIR/routing.py"
 ORCH_HOST="${ORCH_HOST:-$ORCH_AGENT}"
-ORCH_SIZE=$(gh issue view "$ISSUE" --repo "$REPO" --json body -q .body 2>/dev/null \
-  | python3 "$ROUTING_PY" size - 2>/dev/null || echo M)
 ORCH_ATTEMPT=$(( ${RESUME_ATTEMPT:-0} + 1 ))
 route_args=$(python3 "$ROUTING_PY" cli-args coordinate --host "$ORCH_HOST" \
-  --size "$ORCH_SIZE" --attempt "$ORCH_ATTEMPT" 2>/dev/null || true)
+  --attempt "$ORCH_ATTEMPT" 2>/dev/null || true)
 ORCH_CLI_ARGS="${ORCH_CLI_ARGS:-}${route_args:+ $route_args}"
-export ORCH_HOST ORCH_SIZE ORCH_ATTEMPT ORCH_ROUTING_TOOL="$ROUTING_PY"
-log "Routing #$ISSUE: host=$ORCH_HOST size=$ORCH_SIZE attempt=$ORCH_ATTEMPT${route_args:+ ($route_args)}"
+export ORCH_HOST ORCH_ATTEMPT ORCH_ROUTING_TOOL="$ROUTING_PY"
+log "Routing #$ISSUE: host=$ORCH_HOST attempt=$ORCH_ATTEMPT${route_args:+ ($route_args)}"
 
 # Stack-through: resolve which branch this issue builds on. When a dependency
 # has an open (unmerged) PR, this is that PR's head branch — the agent forks
@@ -218,7 +216,7 @@ export ORCH_STATE_PR_N="${RESUME_PR:-}"
   ORCH_STATE_TOOL="$ORCH_STATE_TOOL" \
   ORCH_STATE_ISSUE_N="$ORCH_STATE_ISSUE_N" \
   ORCH_STATE_PR_N="$ORCH_STATE_PR_N" \
-  ORCH_HOST="$ORCH_HOST" ORCH_SIZE="$ORCH_SIZE" ORCH_ATTEMPT="$ORCH_ATTEMPT" \
+  ORCH_HOST="$ORCH_HOST" ORCH_ATTEMPT="$ORCH_ATTEMPT" \
   ORCH_ROUTING_TOOL="$ORCH_ROUTING_TOOL" \
   "$ORCH_CLI" -p "$ORCH_SKILL $ISSUE" $ORCH_CLI_ARGS) \
   > "$LOG_DIR/issue-$ISSUE.log" 2>&1 &

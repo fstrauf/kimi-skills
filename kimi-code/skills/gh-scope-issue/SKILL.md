@@ -266,7 +266,7 @@ Do **not** require label `scoping`. Process until empty.
 ### Phase 3 — Codebase deep dive (the core of this skill)
 
 1. **Find where the problem is produced**, not only where it is noticed.  
-2. Explore with tools (and 1–2 explore subagents if useful, cost role `explore`: `python3 "${ORCH_ROUTING_TOOL:-$HOME/.kimi-code/skills/pr-orchestrator-generic/routing.py}" route explore --host "$ORCH_HOST"`; on Claude that is `Agent(subagent_type=loop-explorer, model=haiku)`): call paths, existing modules that already do ≥80% of the ask, drift/duplication. Keep raw file reading in the subagents and bring back only `file:line` conclusions.  
+2. Explore with tools (and 1–2 explore subagents if useful, cost role `explore`: `python3 "${ORCH_ROUTING_TOOL:-$HOME/.kimi-code/skills/pr-orchestrator-generic/routing.py}" route explore --host "$ORCH_HOST"`; on Claude that is `Agent(subagent_type=loop-explorer, model=sonnet)`): call paths, existing modules that already do ≥80% of the ask, drift/duplication. Keep raw file reading in the subagents and bring back only `file:line` conclusions.  
 3. **Architecture fit:** Which module owns this? Extend it vs new parallel path? Does the fix sit in the right layer?  
 4. **Documentation fit:** Primary docs for the area — contradicts / extends / clarifies / untouched? If contract changes, ticket must require doc updates or `NOTE:`/`BUSINESS RULE:` comments. If no docs, say so — do not invent a mandatory doc index for repos that lack one. For an HTTP API change, also identify the product repository's canonical OpenAPI file and validation command; do not require OpenAPI for non-API work.  
 5. **Existing coverage:** Prefer reuse over greenfield.  
@@ -325,7 +325,7 @@ Prefer **refine** a good ticket over full rewrite. Always include the core secti
 ## Acceptance criteria
 ## QA / verification
 ## Estimate
-Size: S|M|L — <one-line reason>
+<rough effort and one-line reason>
 <!-- Only if true external gate (budget/legal) — otherwise omit -->
 ## Ship gate (external)
 - [ ] …
@@ -334,7 +334,7 @@ Size: S|M|L — <one-line reason>
 </details>
 ```
 
-`## Estimate` **must** start with a machine-readable `Size:` line. pr-loop reads it to choose model tier and effort (`pr-orchestrator-generic/routing.py`), so size honestly. Over-sizing burns quota; under-sizing only costs an escalated retry.
+`## Estimate` is for humans; nothing in the loop parses it.
 
 | Size | When |
 |------|------|

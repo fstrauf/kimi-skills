@@ -83,25 +83,25 @@ The cheapest model and lowest effort that does the job. The policy table lives i
 Before **every** subagent spawn, ask for the route:
 
 ```bash
-python3 "$ORCH_ROUTING_TOOL" route <role> --host "$ORCH_HOST" --size "${ORCH_SIZE:-M}" \
-  --attempt "${ORCH_ATTEMPT:-1}" [--review-iter <N>]
+python3 "$ORCH_ROUTING_TOOL" route <role> --host "$ORCH_HOST" \
+  --attempt "${ORCH_ATTEMPT:-1}"
 # → tier=mid effort=medium model=sonnet agent=loop-implementer
 ```
 
-(Interactive run without the loop env: `python3 ~/.kimi-code/skills/pr-orchestrator-generic/routing.py …`, where size comes from `routing.py size` on the issue body.)
+(Interactive run without the loop env: `python3 ~/.kimi-code/skills/pr-orchestrator-generic/routing.py …`.)
 
 | Step | Role |
 |------|------|
 | Broad code search (Phase 1, finding files for briefs) | `explore` |
 | Phase 2 implementer | `implement` |
-| Phase 4 reviewer (pass `--review-iter N`) | `review` |
+| Phase 4 reviewer | `review` |
 | Review-finding fixes, targeted-test fixes, ship-gate fixes | `fix` |
 | Reading long test / build / CI logs | `triage` |
 
 Rules:
 
 - Use the returned `model` / `agent` exactly (Claude: `Agent(subagent_type=<agent>, model=<model>)`). Empty `model` → your host has no tier routing; spawn as usual and do not pass a model.
-- Escalation (the only path to the strongest model) is computed from `--attempt` / `--review-iter`. Never bump a model yourself because a task "feels hard".
+- Escalation (the only path to the strongest model) is computed from `--attempt`. Never bump a model yourself because a task "feels hard".
 - The coordinator stays cheap. Don't read large files or raw logs yourself: send searches to `explore` and logs to `triage`. Shell work (tests, UI commands) is shell execution, not an LLM route.
 
 ## Ori and OpenRouter execution policy
@@ -603,7 +603,7 @@ WHILE true:
        git diff --name-only "origin/${ORCH_BASE_BRANCH:-main}...HEAD" 2>/dev/null \
          || git diff --name-only origin/master...HEAD \
          || git diff --name-only HEAD~1
-  5. Spawn reviewer subagent (role `review`, `--review-iter N`; prompt below), background, wait for completion
+  5. Spawn reviewer subagent (role `review`; prompt below), background, wait for completion
   6. Parse BASELINE + VERDICT
   7. If VERDICT == PASS:
        - Post passing PR comment

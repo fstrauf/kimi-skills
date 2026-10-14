@@ -155,12 +155,10 @@ Scoping runs on **Opus (medium)**; implement, review, fix, explore and coordinat
 | Input | Source |
 |-------|--------|
 | **Role** | Named by the skill at each step: `coordinate`, `scope`, `explore`, `implement`, `review`, `fix`, `triage` |
-| **Size** | `## Estimate` → `Size: S\|M\|L`, written by gh-scope-issue (missing → `M`) |
 | **Attempt** | Worker: failed runs on the PR + 1 (from `ship-loop-state`) |
-| **Review iteration** | Orchestrator Phase 4 |
 
 - Opus is the default only for `scope`. For every other role it is reachable only by escalation.
-- **Escalation is the only path up.** Attempt 2 moves `implement`/`fix`/`review` up one step. Attempt ≥ 3, or an L issue on review iteration 3, unlocks the strong tier for that role only.
+- **Escalation is the only path up.** Attempt 2 moves `implement`/`fix`/`review` up one step. Attempt ≥ 3 unlocks the strong tier for that role only.
 - Knobs (profile or env): `ORCH_MAX_TIER=mid` bans the strong tier entirely; `ORCH_ROUTE_<ROLE>=tier:effort` pins one role.
 - Hosts: `claude` maps tiers to `haiku`/`sonnet`/`opus` (session via `--model` + `--settings effortLevel`; subagents via `claude/agents/loop-*.md` + the Agent `model` override). kimi/grok/ori run one model, so routing is a no-op for them.
 
