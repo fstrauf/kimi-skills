@@ -150,7 +150,7 @@ Logs: `~/.kimi-code/pr-loop-<profile>/`, `~/.grok/pr-loop-<profile>/` or `~/.cla
 
 ## Cost routing
 
-Every LLM step runs on the **cheapest model tier and lowest effort that does the job**. On subscriptions, cost means quota, so the strong tier (Opus on Claude) is used as little as possible. The policy table has one home: [`routing.py`](../kimi-code/skills/pr-orchestrator-generic/routing.py). Don't copy it here or into skills.
+Scoping runs on **Opus (medium)**; implement, review, fix, explore and coordinate run on **Sonnet** (medium, coordinate/explore low); **Haiku** is used only to summarize logs (`triage`). The policy table has one home: [`routing.py`](../kimi-code/skills/pr-orchestrator-generic/routing.py). Don't copy it here or into skills.
 
 | Input | Source |
 |-------|--------|
@@ -159,7 +159,7 @@ Every LLM step runs on the **cheapest model tier and lowest effort that does the
 | **Attempt** | Worker: failed runs on the PR + 1 (from `ship-loop-state`) |
 | **Review iteration** | Orchestrator Phase 4 |
 
-- Default routes never reach the strong tier. Mechanical and search work goes to cheap subagents (`explore`, `triage`); the coordinator session stays on a low-effort mid or cheap tier.
+- Opus is the default only for `scope`. For every other role it is reachable only by escalation.
 - **Escalation is the only path up.** Attempt 2 moves `implement`/`fix`/`review` up one step. Attempt ≥ 3, or an L issue on review iteration 3, unlocks the strong tier for that role only.
 - Knobs (profile or env): `ORCH_MAX_TIER=mid` bans the strong tier entirely; `ORCH_ROUTE_<ROLE>=tier:effort` pins one role.
 - Hosts: `claude` maps tiers to `haiku`/`sonnet`/`opus` (session via `--model` + `--settings effortLevel`; subagents via `claude/agents/loop-*.md` + the Agent `model` override). kimi/grok/ori run one model, so routing is a no-op for them.

@@ -4,9 +4,9 @@
 One home for the policy. Skills and shell wrappers ask this module; they do
 not pick models by hand.
 
-Policy: the cheapest tier and lowest effort that does the job. On a
-subscription, cost is quota pressure, so the strong tier (Opus on Claude) is
-reachable only through escalation of a failing run:
+Policy: Opus for scoping, Sonnet (medium) for implement/review/fix, Haiku only
+for log triage. Opus is otherwise reachable only through escalation of a
+failing run:
 
   - resume attempt 2          → implement/fix/review go up one step
                                 (cheap→mid, effort +1; mid stays mid)
@@ -46,21 +46,18 @@ EFFORTS = ("low", "medium", "high")
 SIZES = ("S", "M", "L")
 DEFAULT_SIZE = "M"
 
-# role → size → (tier, effort). The strong tier never appears here on purpose.
-TABLE: dict[str, dict[str, tuple[str, str]]] = {
-    # Orchestrator session: git, gh, PR comments, spawning subagents.
-    "coordinate": {"S": ("cheap", "low"), "M": ("mid", "low"), "L": ("mid", "low")},
-    # Scope session (size is not known yet — same route for every size).
-    "scope": {"S": ("mid", "medium"), "M": ("mid", "medium"), "L": ("mid", "medium")},
-    # Read-only code search subagents.
-    "explore": {"S": ("cheap", "low"), "M": ("cheap", "low"), "L": ("cheap", "medium")},
-    "implement": {"S": ("cheap", "high"), "M": ("mid", "medium"), "L": ("mid", "high")},
-    "review": {"S": ("mid", "medium"), "M": ("mid", "medium"), "L": ("mid", "high")},
-    # Review-finding and test-failure fixes.
-    "fix": {"S": ("cheap", "medium"), "M": ("mid", "low"), "L": ("mid", "medium")},
-    # Summarize failing logs, hygiene passes.
-    "triage": {"S": ("cheap", "low"), "M": ("cheap", "low"), "L": ("cheap", "low")},
+# role → (tier, effort), same for every size. Opus only for scoping (and escalation);
+# Sonnet everywhere else; Haiku only to summarize logs.
+_POLICY: dict[str, tuple[str, str]] = {
+    "coordinate": ("mid", "low"),
+    "scope": ("strong", "medium"),
+    "explore": ("mid", "low"),
+    "implement": ("mid", "medium"),
+    "review": ("mid", "medium"),
+    "fix": ("mid", "medium"),
+    "triage": ("cheap", "low"),
 }
+TABLE: dict[str, dict[str, tuple[str, str]]] = {role: {size: row for size in SIZES} for role, row in _POLICY.items()}
 
 ESCALATING_ROLES = frozenset({"implement", "fix", "review"})
 

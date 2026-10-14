@@ -38,13 +38,21 @@ class RouteTest(unittest.TestCase):
 
     def test_table_lookup(self):
         r = self.r("implement", "S")
-        self.assertEqual((r.tier, r.effort, r.model, r.agent), ("cheap", "high", "haiku", "loop-implementer"))
+        self.assertEqual((r.tier, r.effort, r.model, r.agent), ("mid", "medium", "sonnet", "loop-implementer"))
         self.assertEqual(self.r("coordinate").model, "sonnet")
 
-    def test_default_policy_never_uses_strong(self):
+    def test_only_scope_uses_strong_by_default(self):
         for role in routing.TABLE:
             for size in routing.SIZES:
-                self.assertNotEqual(self.r(role, size).tier, "strong", (role, size))
+                expected = "strong" if role == "scope" else None
+                if expected:
+                    self.assertEqual(self.r(role, size).model, "opus", (role, size))
+                else:
+                    self.assertNotEqual(self.r(role, size).tier, "strong", (role, size))
+
+    def test_haiku_only_for_triage(self):
+        for role in routing.TABLE:
+            self.assertEqual(self.r(role).model == "haiku", role == "triage", role)
 
     def test_attempt_two_steps_up_once(self):
         r = self.r("fix", "S", attempt=2)
