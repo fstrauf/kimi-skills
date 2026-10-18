@@ -1433,9 +1433,9 @@ heal_unlabeled_scoped_orphans() {
   esac
 }
 
-# `awaiting-merge` on a CLOSED issue is stale (the merge landed and the
-# closer forgot the label). Strip it so leftover reports stay honest.
-strip_closed_awaiting_merge() {
+# `awaiting-merge` / `agent-failed` on a CLOSED issue are stale (open-work
+# labels the closer forgot). Strip them so leftover reports stay honest.
+strip_closed_stale_labels() {
   local mode="${1:-log}"
   [ -n "${REPO:-}" ] || return 0
   ensure_loop_labels
@@ -1443,21 +1443,21 @@ strip_closed_awaiting_merge() {
   local stripped
   stripped=$(
     REPO_MATCH="$REPO" \
-    python3 "$(_labels_py)" strip-closed-awaiting 2>/dev/null || true
+    python3 "$(_labels_py)" strip-closed-stale 2>/dev/null || true
   )
   stripped=$(echo "$stripped" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
   if [ -z "$stripped" ]; then
     case "$mode" in
-      print) echo "strip-closed-awaiting: (none)" ;;
+      print) echo "strip-closed-stale: (none)" ;;
       quiet) ;;
-      *) type log >/dev/null 2>&1 && log "Closed awaiting-merge strip: none" || true ;;
+      *) type log >/dev/null 2>&1 && log "Closed-issue stale label strip: none" || true ;;
     esac
     return 0
   fi
   case "$mode" in
-    print) echo "strip-closed-awaiting: $stripped" ;;
+    print) echo "strip-closed-stale: $stripped" ;;
     quiet) ;;
-    *) type log >/dev/null 2>&1 && log "Removed stale \`awaiting-merge\` from closed issue(s): $stripped" || true ;;
+    *) type log >/dev/null 2>&1 && log "Removed stale labels from closed issue(s): $stripped" || true ;;
   esac
 }
 

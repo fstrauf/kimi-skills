@@ -39,7 +39,7 @@ One ship label: **`ready`**. Everything else is metadata or a park.
 | `needs-input` | scope or implementer | Human must answer (product / legal / budget) | park |
 | `blocked` | scope / human | **External** stop only (vendor, legal hold). Rare. | park |
 | `agent-working` | pr-loop worker | Claimed by a live run | land / park / fail |
-| `agent-failed` | pr-loop worker | Mechanical failure (crash, tests, review FAIL×3). **Resumable when a draft PR exists**: the worker re-queues it (`+ready`) and the next run reuses the PR branch, continuing from the `ship-loop-state` phase recorded on the PR (attempt-capped, default 3). Without a PR it needs a human: `-agent-failed +ready`. | auto-resume / human |
+| `agent-failed` | pr-loop worker | Mechanical failure (crash, tests, review FAIL×3). **Resumable when a draft PR exists**: the worker re-queues it (`+ready`) and the next run reuses the PR branch, continuing from the `ship-loop-state` phase recorded on the PR (attempt-capped, default 3). Without a PR it needs a human: `-agent-failed +ready`. | auto-resume / human. Stripped from closed issues at loop start |
 | `awaiting-merge` | pr-loop worker | PR open; merge pending | stack through / human `gh stack merge`. Stripped from closed issues at loop start |
 | `triage:ready-to-implement` | triage | Metadata only. Loop heals orphans → `+ready` | — |
 

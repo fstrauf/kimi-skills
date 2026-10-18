@@ -14,6 +14,11 @@ CLI (env: REPO_MATCH=owner/repo, optional READY_LABEL / TRIAGE_LABEL):
   strip-closed-awaiting
                     remove `awaiting-merge` from closed issues
                     prints "N N N" (or empty)
+  strip-closed-agent-failed
+                    remove `agent-failed` from closed issues
+                    prints "N N N" (or empty)
+  strip-closed-stale
+                    both strips above; prints "label: N N" per label (or empty)
   leftovers         print parked / waiting queues (never "Done" if any remain)
 """
 
@@ -175,20 +180,44 @@ def heal_unlabeled_scoped(repo, *, ready="ready", apply=True):
     return healed
 
 
-def strip_closed_awaiting(repo, *, apply=True):
-    """`awaiting-merge` on a closed issue is stale — the merge already landed."""
+# Labels that only describe open work. On a closed issue they are stale and
+# make leftover reports and label counts lie.
+STALE_ON_CLOSED = ("awaiting-merge", "agent-failed")
+
+
+def strip_closed_label(repo, label, *, apply=True):
     issues = _gh_json([
         "issue", "list", "--repo", repo, "--state", "closed",
-        "--label", "awaiting-merge", "--limit", "100",
+        "--label", label, "--limit", "100",
         "--json", "number",
     ])
     stripped = []
     for it in issues:
         n = it["number"]
         if apply:
-            _gh_edit(repo, n, "--remove-label", "awaiting-merge")
+            _gh_edit(repo, n, "--remove-label", label)
         stripped.append(str(n))
     return stripped
+
+
+def strip_closed_awaiting(repo, *, apply=True):
+    """`awaiting-merge` on a closed issue is stale — the merge already landed."""
+    return strip_closed_label(repo, "awaiting-merge", apply=apply)
+
+
+def strip_closed_agent_failed(repo, *, apply=True):
+    """`agent-failed` on a closed issue is stale — nothing is left to retry."""
+    return strip_closed_label(repo, "agent-failed", apply=apply)
+
+
+def strip_closed_stale(repo, *, apply=True):
+    """Strip every STALE_ON_CLOSED label; {label: [N, ...]} for non-empty strips."""
+    out = {}
+    for label in STALE_ON_CLOSED:
+        stripped = strip_closed_label(repo, label, apply=apply)
+        if stripped:
+            out[label] = stripped
+    return out
 
 
 def leftovers(repo, *, ready="ready"):
@@ -265,6 +294,12 @@ def main():
         return
     if cmd == "strip-closed-awaiting":
         print(" ".join(strip_closed_awaiting(repo)))
+        return
+    if cmd == "strip-closed-agent-failed":
+        print(" ".join(strip_closed_agent_failed(repo)))
+        return
+    if cmd == "strip-closed-stale":
+        print("; ".join(f"{k}: {' '.join(v)}" for k, v in strip_closed_stale(repo).items()))
         return
     if cmd == "leftovers":
         print(format_leftovers(leftovers(repo, ready=ready)))
