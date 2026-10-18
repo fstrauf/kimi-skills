@@ -41,14 +41,19 @@ class RouteTest(unittest.TestCase):
         self.assertEqual((r.tier, r.effort, r.model, r.agent), ("mid", "medium", "sonnet", "loop-implementer"))
         self.assertEqual(self.r("coordinate").model, "sonnet")
 
-    def test_only_scope_uses_strong_by_default(self):
+    def test_only_scope_and_ml_verify_use_strong_by_default(self):
         for role in routing.TABLE:
             for size in routing.SIZES:
-                expected = "strong" if role == "scope" else None
-                if expected:
+                if role == "scope" or (role == "verify" and size != "S"):
                     self.assertEqual(self.r(role, size).model, "opus", (role, size))
                 else:
                     self.assertNotEqual(self.r(role, size).tier, "strong", (role, size))
+
+    def test_verify_is_size_aware(self):
+        self.assertEqual((self.r("verify", "S").model, self.r("verify", "S").agent), ("sonnet", "loop-verifier"))
+        self.assertEqual(self.r("verify", "M").model, "opus")
+        self.assertEqual(self.r("verify", "L").model, "opus")
+        self.assertEqual(self.r("verify", "S", attempt=3).model, "opus")
 
     def test_haiku_only_for_triage(self):
         for role in routing.TABLE:

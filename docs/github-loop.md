@@ -150,16 +150,16 @@ Logs: `~/.kimi-code/pr-loop-<profile>/`, `~/.grok/pr-loop-<profile>/` or `~/.cla
 
 ## Cost routing
 
-Scoping runs on **Opus (medium)**; implement, review, fix, explore and coordinate run on **Sonnet** (medium, coordinate/explore low); **Haiku** is used only to summarize logs (`triage`). The policy table has one home: [`routing.py`](../kimi-code/skills/pr-orchestrator-generic/routing.py). Don't copy it here or into skills.
+Scoping runs on **Opus (medium)**, and so does the correctness/spec verifier (`verify`) on M/L issues (S → Sonnet); implement, review, fix, explore and coordinate run on **Sonnet** (medium, coordinate/explore low); **Haiku** is used only to summarize logs (`triage`). The policy table has one home: [`routing.py`](../kimi-code/skills/pr-orchestrator-generic/routing.py). Don't copy it here or into skills.
 
 | Input | Source |
 |-------|--------|
-| **Role** | Named by the skill at each step: `coordinate`, `scope`, `explore`, `implement`, `review`, `fix`, `triage` |
+| **Role** | Named by the skill at each step: `coordinate`, `scope`, `explore`, `implement`, `review`, `verify`, `fix`, `triage` |
 | **Size** | `## Estimate` → `Size: S\|M\|L`, written by gh-scope-issue (missing → `M`) |
 | **Attempt** | Worker: failed runs on the PR + 1 (from `ship-loop-state`) |
 | **Review iteration** | Orchestrator Phase 4 |
 
-- Opus is the default only for `scope`. For every other role it is reachable only by escalation.
+- Opus is the default only for `scope` and for `verify` on M/L. For every other role it is reachable only by escalation.
 - **Escalation is the only path up.** Attempt 2 moves `implement`/`fix`/`review` up one step. Attempt ≥ 3, or an L issue on review iteration 3, unlocks the strong tier for that role only.
 - Knobs (profile or env): `ORCH_MAX_TIER=mid` bans the strong tier entirely; `ORCH_ROUTE_<ROLE>=tier:effort` pins one role.
 - Hosts: `claude` maps tiers to `haiku`/`sonnet`/`opus` (session via `--model` + `--settings effortLevel`; subagents via `claude/agents/loop-*.md` + the Agent `model` override). kimi/grok/ori run one model, so routing is a no-op for them.
@@ -169,7 +169,7 @@ Scoping runs on **Opus (medium)**; implement, review, fix, explore and coordinat
 | Actor | May | Must not |
 |-------|-----|----------|
 | **gh-scope-issue** | Rewrite issue body, `+ready` / `+needs-input` / `+blocked` | Product code, close without ask, `blocked` for sibling deps |
-| **pr-orchestrator-generic** | Implement, draft PR, review×3, ship gate, `gh pr ready` | Merge stacked PRs, invent a park label, run live evals |
+| **pr-orchestrator-generic** | Implement + verification artifact, draft PR, structure review + correctness/spec verify ×3, ship gate, `gh pr ready` | Merge stacked PRs, invent a park label, run live evals |
 | **pr-orchestrator** | Same + call-analyzer UI/QA | Leak those gates into generic |
 | **pr-loop worker** | `ready`→`agent-working`→close / `awaiting-merge` / `agent-failed` | Re-scope, touch human-owned in-progress (no `agent-working`) |
 | **gh-ticket-hygiene** | Propose closes / clear stale `needs-input` | Add `ready`, touch `agent-*`, close without confirm |

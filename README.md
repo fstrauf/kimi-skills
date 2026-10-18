@@ -101,7 +101,7 @@ You maintain many product repos and want the **same shipping loop** everywhere, 
 │  Layer 1 — Universal loop skill (this repo)                 │
 │  pr-orchestrator-generic                                    │
 │  • host detection (Kimi vs Grok tool map)                    │
-│  • implement → draft PR → thermonuclear ×3 → ship gate      │
+│  • implement → draft PR → review + verify ×3 → ship gate    │
 │  • mark ready                                               │
 │  • no product paths, no real-user QA, no monorepo secrets   │
 └───────────────────────────┬─────────────────────────────────┘

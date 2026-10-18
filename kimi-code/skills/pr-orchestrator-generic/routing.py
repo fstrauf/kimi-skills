@@ -4,9 +4,9 @@
 One home for the policy. Skills and shell wrappers ask this module; they do
 not pick models by hand.
 
-Policy: Opus for scoping, Sonnet (medium) for implement/review/fix, Haiku only
-for log triage. Opus is otherwise reachable only through escalation of a
-failing run:
+Policy: Opus for scoping and for the correctness/spec verifier on M/L issues,
+Sonnet (medium) for implement/review/fix and S-size verify, Haiku only for log
+triage. Opus is otherwise reachable only through escalation of a failing run:
 
   - resume attempt 2          → implement/fix/review go up one step
                                 (cheap→mid, effort +1; mid stays mid)
@@ -58,8 +58,11 @@ _POLICY: dict[str, tuple[str, str]] = {
     "triage": ("cheap", "low"),
 }
 TABLE: dict[str, dict[str, tuple[str, str]]] = {role: {size: row for size in SIZES} for role, row in _POLICY.items()}
+# The correctness/spec verifier is the one size-aware role: loop-passed M/L PRs
+# still shipped correctness bugs that only an Opus review caught.
+TABLE["verify"] = {"S": ("mid", "medium"), "M": ("strong", "medium"), "L": ("strong", "medium")}
 
-ESCALATING_ROLES = frozenset({"implement", "fix", "review"})
+ESCALATING_ROLES = frozenset({"implement", "fix", "review", "verify"})
 
 HOST_MODELS: dict[str, dict[str, str]] = {
     "claude": {"cheap": "haiku", "mid": "sonnet", "strong": "opus"},
@@ -71,6 +74,7 @@ HOST_AGENTS: dict[str, dict[str, str]] = {
         "explore": "loop-explorer",
         "implement": "loop-implementer",
         "review": "loop-reviewer",
+        "verify": "loop-verifier",
         "fix": "loop-fixer",
         "triage": "loop-triage",
     },

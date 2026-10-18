@@ -44,7 +44,7 @@ Sanity check: `pnpm test:pr` exists on `dev`. If `webapp/package.json` has no `t
 
 ## Phases 0–4 — follow generic
 
-Read the sibling `../pr-orchestrator-generic/SKILL.md` first for the shared host, Ori/OpenRouter, queue, review, and Phases 0–4 contract. Then read this overlay for call-analyzer-specific gates and execute its Phases 0–4 (host map, implement, draft PR, thermonuclear ×3, stack rules).
+Read the sibling `../pr-orchestrator-generic/SKILL.md` first for the shared host, Ori/OpenRouter, queue, review, and Phases 0–4 contract. Then read this overlay for call-analyzer-specific gates and execute its Phases 0–4 (host map, implement + verification artifact, draft PR, parallel structure review + correctness/spec verify ×3, stack rules).
 
 **Resume mode:** when `ORCH_RESUME_PHASE` is set, this is a resumed run on an existing PR (branch already checked out — do NOT create a new branch/PR). Continue from `ORCH_RESUME_PHASE` (e.g. `test_gate` resumes at Phase 5). Prior review findings are already on the PR as comments; re-read them before re-running review, and reuse the existing PR number for all gate comments and the completion marker.
 
@@ -255,7 +255,7 @@ Final automated safety gate before ready. Implements the "Automated PR Orchestra
 
 ```
 This PR is ready for review.
-- ✅ Thermonuclear review passed (<N> iteration(s))
+- ✅ Structure review + correctness/spec verification passed (<N> iteration(s))
 - ✅ pnpm test:pr green (lean PR-tier gate; full pnpm test:all runs once at dev→main release)
 - ℹ️ UI verification gate (advisory): <pass | fail (non-blocking) | skipped — no frontend UI changes>
 - ✅ Real-user QA safety check passed
