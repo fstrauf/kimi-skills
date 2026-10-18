@@ -178,5 +178,45 @@ class StripClosedAwaitingTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class StripClosedAgentFailedTest(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.queries = []
+        self._orig = (labels._gh_edit, labels._gh_json)
+        labels._gh_edit = lambda repo, n, *args: self.calls.append((n, args))
+
+    def tearDown(self):
+        labels._gh_edit, labels._gh_json = self._orig
+
+    def fake_json(self, by_label):
+        def _json(args):
+            self.queries.append(args)
+            label = args[args.index("--label") + 1]
+            return [{"number": n} for n in by_label.get(label, [])]
+        labels._gh_json = _json
+
+    def test_strips_label_from_closed_issues(self):
+        self.fake_json({"agent-failed": [3, 4]})
+        self.assertEqual(labels.strip_closed_agent_failed("o/r"), ["3", "4"])
+        self.assertIn("closed", self.queries[0])
+        self.assertEqual(self.calls, [(3, ("--remove-label", "agent-failed")),
+                                      (4, ("--remove-label", "agent-failed"))])
+
+    def test_dry_run_does_not_edit(self):
+        self.fake_json({"agent-failed": [3]})
+        self.assertEqual(labels.strip_closed_agent_failed("o/r", apply=False), ["3"])
+        self.assertEqual(self.calls, [])
+
+    def test_stale_strips_both_labels(self):
+        self.fake_json({"awaiting-merge": [7], "agent-failed": [3, 4]})
+        self.assertEqual(labels.strip_closed_stale("o/r"),
+                         {"awaiting-merge": ["7"], "agent-failed": ["3", "4"]})
+        self.assertEqual(len(self.calls), 3)
+
+    def test_stale_omits_empty_labels(self):
+        self.fake_json({"agent-failed": [3]})
+        self.assertEqual(labels.strip_closed_stale("o/r"), {"agent-failed": ["3"]})
+
+
 if __name__ == "__main__":
     unittest.main()

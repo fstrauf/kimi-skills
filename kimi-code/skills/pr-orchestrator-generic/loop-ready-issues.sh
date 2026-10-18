@@ -343,7 +343,7 @@ log "Repo:    $REPO  |  checkout $REPO_DIR"
 promote_triage_ready_orphans log
 heal_false_dependency_blocks log
 heal_unlabeled_scoped_orphans log
-strip_closed_awaiting_merge log
+strip_closed_stale_labels log
 # REST-only recovery: issues stuck on agent-working after a hard kill get
 # re-queued (no PR) or parked as awaiting-merge (open PR).
 recover_stuck_agent_working

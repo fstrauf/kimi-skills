@@ -497,6 +497,9 @@ Return, per finding: fixed / not fixed (reason).
 - Same substantive finding in two consecutive iterations
 - Unparseable `VERDICT` from either reviewer
 - Missing `BASELINE: loaded` or `BASELINE: MISSING`
+- A review subagent cannot be spawned (no subagent tool on this host, spawn error, or it never returns a result)
+
+No review subagent means no review: never review the diff yourself or skip the loop. Append `phase=review status=failed next=review`, exit nonzero, and never reach `gh pr ready`. The draft PR stays resumable.
 
 Do not enter the test gate without both PASS.
 
