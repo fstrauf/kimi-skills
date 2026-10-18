@@ -1,11 +1,12 @@
 ---
 name: pr-orchestrator-generic
 description: >-
-  Orchestrate the full shipping loop for a GitHub issue in any repo — implement,
-  open a draft PR, run thermonuclear review via PR comments, fix findings, run
-  pnpm test:all, and mark the PR ready for review. Works on Kimi Code, Grok Build,
-  Ori, and Claude Code. Use for /pr-orchestrator-generic, unattended Ready-column loops,
-  or when shipping a scoped issue end-to-end.
+  Orchestrate the full shipping loop for a GitHub issue in any repo — implement
+  with a red-first verification artifact, open a draft PR, run parallel
+  thermonuclear (structure) and correctness/spec reviews via PR comments, fix
+  findings, run the ship gate, and mark the PR ready for review. Works on Kimi
+  Code, Grok Build, Ori, and Claude Code. Use for /pr-orchestrator-generic,
+  unattended Ready-column loops, or when shipping a scoped issue end-to-end.
 when-to-use: >-
   Triggers on "/pr-orchestrator-generic", "/skill:pr-orchestrator-generic",
   "ship issue with generic orchestrator", or the loop-ready-issues.sh runner.
@@ -14,13 +15,13 @@ argument-hint: "<issue-number> [<issue-number>...] [--parallel|--serial]"
 
 # PR Orchestrator (Generic) — Kimi + Grok + Ori + Claude
 
-Drive a GitHub issue from assignment through implementation, automated thermonuclear review, test gating, and PR creation. The review handover happens on a GitHub draft PR so every finding and fix is traceable.
+Drive a GitHub issue from assignment through implementation, automated review, test gating, and PR creation. The review handover happens on a GitHub draft PR so every finding and fix is traceable.
 
 This is the **repo-agnostic** orchestrator. It assumes only:
 
 - a git repository with a GitHub remote and an authenticated `gh` CLI,
 - a **deterministic ship gate** (see Phase 5 — prefer `pnpm run test:gate` or the non-eval subset of `test:all`),
-- the `thermo-nuclear-code-quality-review` skill is available as the review baseline.
+- the `thermo-nuclear-code-quality-review` skill is available as the structure-review baseline.
 
 **Do not run live LLM eval suites in the automated loop** (`test:evals` / `#[ignore]` evals). They are multi-minute, flaky, and not part of CI. Humans can run `pnpm run test:evals` or full `pnpm test:all` before merge if desired.
 
@@ -42,22 +43,7 @@ Detect which agent host you are on, then use **only** that host's tools for the 
 | Tools named `bash`, `spawn_agent`, `wait_agent`, `read`, `write`, `edit`, `grep`, `glob`, `set_goal`, `update_goal` exist | **Ori** |
 | Unsure | Prefer the tools you actually have; never invent tool names from the other host |
 
-Write the host name into your working notes (`host: kimi|grok|ori|claude`) and stick to the matching column in the tool map below.
-
-## Tool map (use your host's column)
-
-| Purpose | Kimi | Grok | Ori | Claude |
-|---------|------|------|-----|--------|
-| Shell (git, gh, short commands) | `Bash` | `run_terminal_command` | `bash` | `Bash` |
-| Long-running shell (`pnpm test:all`, servers) | `Bash` with `run_in_background: true`, `disable_timeout: true` | `run_terminal_command` with `background: true`, large/`0` `timeout` | Prefer `spawn_agent` + `wait_agent`; use `bash` with `timeoutMs` ≥ 3600000 only when no background agent is needed | `Bash` with `run_in_background: true` (max `timeout` 600000 for foreground), then wait **in the same turn** per the next row |
-| Wait on background work | `TaskOutput(block=true)` / wait on task id | `get_command_or_subagent_output` with `task_ids` + positive `timeout_ms` | `wait_agent` | `TaskOutput(task_id, block=true, timeout=600000)` in a loop **within the same turn** until the task reports completed. **Never** end the turn expecting a completion notification — see *Claude: never end a turn on a pending wait* below |
-| Stop background work | kill via shell / host stop API if available | `kill_command_or_subagent` | `stop_agent` | `TaskStop` |
-| Implementation / fix / review subagents | `Agent` (coder/reviewer) | `spawn_subagent` (`subagent_type: "general-purpose"`; prefer `isolation: "worktree"` for implementers) | `task` with `result_schema` for structured short work; `spawn_agent` + `wait_agent` for long work or progress monitoring | `Agent` with `subagent_type` = routed `agent` (`loop-implementer`, `loop-reviewer`, `loop-fixer`, `loop-explorer`, `loop-triage`) and `model` = routed `model`, spawned with **`run_in_background: false`** so the call blocks and returns the result in-turn |
-| Progress tracking | `TodoList` | `todo_write` | `update_goal` / inline comments | `TodoWrite` (or task tools) |
-| Goal / status (optional) | `CreateGoal` | `update_goal` (`message` / `completed` / `blocked_reason`) | `set_goal` / `update_goal` | — (state markers only) |
-| Read files | `Read` | `read_file` | `read` | `Read` |
-| Search code | `Grep`, `Glob` | `grep`, `list_dir` | `grep`, `glob` | `Grep`, `Glob` (broad sweeps → `loop-explorer`) |
-| Write small state files | shell redirect / write tools | `write` or shell via `run_terminal_command` | `write` or `edit` or shell via `bash` | `Write` or shell redirect |
+Write the host name into your working notes (`host: kimi|grok|ori|claude`). **Read [references/hosts.md](references/hosts.md) once** for that host's column: shell, background waits, subagent spawning, Ori result schemas and the OpenRouter adapter policy.
 
 ### Claude: never end a turn on a pending wait
 
@@ -65,10 +51,9 @@ A background-completion notification is delivered **only to a top-level interact
 
 Rules for Claude hosts:
 
-- Spawn review, implementer, fixer and triage subagents with `run_in_background: false`. The `Agent` call returns their result in-turn.
+- Spawn review, verify, implementer, fixer and triage subagents with `run_in_background: false`. The `Agent` call returns their result in-turn.
 - Long shell jobs (`pnpm test:pr`, `pnpm test:all`, the dev stack readiness probe) do go in the background because they exceed the 10-minute foreground cap. Immediately wait on them with `TaskOutput(task_id, block=true, timeout=600000)`, and repeat the call until the task reports completed. A timeout means "still running", so call again in the same turn.
 - Before ending any turn, check that every job you started has finished and you've read its result. The only legitimate stopping points are `gh pr ready` succeeding, a `needs-input` exit, or a genuine failure reported on the PR.
-
 
 **Rules:**
 
@@ -94,30 +79,21 @@ python3 "$ORCH_ROUTING_TOOL" route <role> --host "$ORCH_HOST" --size "${ORCH_SIZ
 |------|------|
 | Broad code search (Phase 1, finding files for briefs) | `explore` |
 | Phase 2 implementer | `implement` |
-| Phase 4 reviewer (pass `--review-iter N`) | `review` |
+| Phase 4 structure reviewer (pass `--review-iter N`) | `review` |
+| Phase 4 correctness/spec verifier (pass `--review-iter N`) | `verify` |
 | Review-finding fixes, targeted-test fixes, ship-gate fixes | `fix` |
 | Reading long test / build / CI logs | `triage` |
 
 Rules:
 
 - Use the returned `model` / `agent` exactly (Claude: `Agent(subagent_type=<agent>, model=<model>)`). Empty `model` → your host has no tier routing; spawn as usual and do not pass a model.
-- Escalation (the only path to the strongest model) is computed from `--attempt` / `--review-iter`. Never bump a model yourself because a task "feels hard".
+- Escalation (the only path to the strongest model, apart from the defaults `routing.py` itself sets) is computed from `--attempt` / `--review-iter`. Never bump a model yourself because a task "feels hard".
 - The coordinator stays cheap. Don't read large files or raw logs yourself: send searches to `explore` and logs to `triage`. Shell work (tests, UI commands) is shell execution, not an LLM route.
-
-## Ori and OpenRouter execution policy
-
-Ori does not expose its in-process `task`/`spawn_agent` API to a shell child. The unattended shell loop therefore invokes an adapter through `ORCH_CLI`; `ORCH_AGENT=ori` supplies the conventional `ori` default, while installations using an OpenRouter adapter should set `ORCH_CLI` explicitly. The adapter must accept `-p <prompt>`, run in the supplied working directory, preserve the exit code, and forward `ORCH_MODEL` when set.
-
-`routing.py` returns tiers here too. Map `tier` onto the adapter's economical / mid / strongest route when it supports one.
-
-`ORCH_MODEL` is an optional hint, not a provider-specific CLI flag. This keeps OpenRouter Auto routing as the default and lets a local adapter map roles/models without coupling this skill to one API. Never silently retry a failed model route as another ticket; report quota failures and let the supervisor switch agents.
-
-For in-process Ori orchestration, prefer `task` with a `result_schema` for implementer/reviewer results. Use `spawn_agent` for long-running test gates and dev servers, then `wait_agent`; do not occupy the coordinator with a multi-hour foreground `bash` call.
 
 ## When to use
 
 - You have a GitHub issue to implement and ship in **any** repo that uses `pnpm test:all` (or documents an equivalent ship gate).
-- You want implement → draft PR → thermonuclear review → fix loop → tests → mark ready, automated.
+- You want implement → draft PR → review → fix loop → tests → mark ready, automated.
 - Interactive or headless (`kimi -p` / `grok -p` / `claude -p` / `loop-ready-issues.sh`). Ori: use `spawn_agent` to invoke this skill as a subagent task.
 
 ## Several issues (interactive coordinator)
@@ -131,84 +107,7 @@ For in-process Ori orchestration, prefer `task` with a `result_schema` for imple
 
 ## Invocation
 
-**Interactive**
-
-```
-# Kimi
-/skill:pr-orchestrator-generic <issue-number>
-
-# Grok / Claude Code
-/pr-orchestrator-generic <issue-number>
-
-# Ori
-Use `task` or `spawn_agent` with prompt containing this skill's instructions.
-```
-
-**Headless (single issue)**
-
-```bash
-kimi -p "/skill:pr-orchestrator-generic <issue-number>" --output-format stream-json
-grok -p "/pr-orchestrator-generic <issue-number>" --always-approve
-claude -p "/pr-orchestrator-generic <issue-number>" --model sonnet --settings '{"effortLevel":"low"}' \
-  --permission-mode bypassPermissions --output-format stream-json --verbose
-# Ori: invoke via `spawn_agent` with prompt containing this skill.
-```
-
-**Walk-away (scope then ship):**
-
-```bash
-ship-loop --profile coffee --agent grok
-ship-loop --profile coffee --ask          # print parked leftovers
-```
-
-**Unattended Ready-column loop** (`pr-loop` on PATH, or `loop-ready-issues.sh` next to this skill):
-
-Board + repo config comes from a **profile** (`profiles/<name>.env`). `--profile` is required.
-
-Installed wrappers (via `~/.local/bin`, already on PATH):
-
-| Command | Points at |
-|---------|-----------|
-| `ship-loop` | `ship-loop.sh` (scope then ship) |
-| `pr-loop` | `loop-ready-issues.sh` |
-| `scope-loop` | `scope-all.sh` |
-| `pr-loop-setup` | `setup-profile.sh` |
-
-```bash
-pr-loop --profile txApp --agent grok
-pr-loop --profile pageseeds-app --agent kimi
-pr-loop --profile any --agent ori
-pr-loop --profile coffee --agent claude        # cost-routed haiku/sonnet; opus only on escalation
-pr-loop --profile txApp --agent grok 3          # max 3 issues
-pr-loop --list-profiles
-
-# First time for a new product (auto-writes profiles/<name>.env if missing):
-pr-loop --profile my-app --repo-dir ~/code/my-app --project <N> --agent grok
-pr-loop --profile my-app --repo-dir ~/code/my-app --project <N> --agent ori
-# or only setup:
-pr-loop-setup my-app --repo-dir ~/code/my-app --project <N>
-```
-
-Logs: `~/.kimi-code/pr-loop-<profile>/`, `~/.grok/pr-loop-<profile>/`, `~/.ori/pr-loop-<profile>/`, or `~/.claude/pr-loop-<profile>/` (per profile). Locks are per-profile so two products can loop concurrently.
-
-**Dirty tree between issues:** the loop auto-removes **untracked** debris (e.g. `packages/cli/node_modules` left after leaving a feature branch) when `ORCH_AUTO_CLEAN=1` (default). It never discards **tracked** modifications — those still abort the run. After each issue it returns the checkout to `main` so the next ticket starts clean.
-
-**Unattended loop queue (REST labels, not Projects):**
-
-```bash
-gh issue edit N --add-label ready          # you enqueue
-pr-loop --profile txApp --agent grok       # agent ships
-```
-
-Labels: see [docs/github-loop.md](../../../docs/github-loop.md). `ready` → `agent-working` → land/close · `awaiting-merge` · `needs-input` · `agent-failed`.
-
-**Auto-merge (serial land):** when `ORCH_AUTO_MERGE=1` (default), the **loop worker** lands the PR after orchestrator success, then pulls `main`.
-
-1. If the PR is in an open **GitHub stack** (base/head chain) and `ORCH_STACK` is not `0`: **`gh stack merge <pr> --yes --squash`** (atomic; never push-land stacks).
-2. Else try `gh pr merge` (squash).
-3. If blocked (*human approval*), **`ORCH_MERGE_VIA_PUSH=1`**: squash onto `main`, push, close issue — **only for non-stacked PRs**.
-
-Set `ORCH_AUTO_MERGE=0` to leave PRs for humans. Stack detection / land helpers live in `loop-common.sh` (`ORCH_STACK=auto|1|0`).
+Interactive: `/pr-orchestrator-generic <issue-number>` (Kimi: `/skill:pr-orchestrator-generic <issue-number>`). Headless commands per host, the `ship-loop` / `pr-loop` / `scope-loop` wrappers, profiles, logs, dirty-tree handling and auto-merge rules: [references/invocation.md](references/invocation.md). Queue labels: [docs/github-loop.md](../../../docs/github-loop.md).
 
 ## Preconditions
 
@@ -222,134 +121,25 @@ Set `ORCH_AUTO_MERGE=0` to leave PRs for humans. Stack detection / land helpers 
 
 These override any other instruction in this skill or any invoked skill:
 
-1. **Review loop max 3 iterations.** Never run a 4th thermonuclear review. If still FAIL after 3, stop and report.
-2. **No full test/build during review.** `pnpm test:all`, `pnpm build`, and similar full suites run only in the test gate, after the review loop passes.
+1. **Review loop max 3 iterations.** Never run a 4th review iteration. If still FAIL after 3, stop and report.
+2. **No full test/build during review.** `pnpm test:all`, `pnpm build`, and similar full suites run only in the test gate, after the review loop passes. The Test plan's own targeted command (the verification artifact) is not a full suite.
 3. **No force-push or destructive commands.** Prefer plain `git push`. If rewrite is unavoidable, `--force-with-lease` only and explain why. **`gh stack push` / `gh stack merge` are allowed** — they use force-with-lease internally.
 4. **No data-modifying SQL** unless the repo's own orchestrator contract explicitly requires it and provides safe scripts. Default: never.
 5. **Orchestrator coordinates; subagents change code** when isolation is available (especially Grok worktrees or Ori `spawn_agent`).
 6. **Never `gh pr merge` or push-land a stacked PR.** Use `gh stack merge` (or leave for a human). Push-land flattens the chain.
 
-## GitHub Stacked PRs (mode A — stack-aware)
+## Base branch and stacks
 
-**Default remains one issue → one ship unit.**
+**Default: one issue → one ship unit.** Stack CLI detection, the create/iterate/land command table and the probe snippet live in [references/stacks.md](references/stacks.md). Read it when `ORCH_STACK=1`, when the current branch is already a `gh stack` branch, or when the open PR's base is another PR's head.
 
-### Ready-queue order (Depends on)
+**Ready-queue order.** pr-loop topologically sorts `ready` issues on `## Depends on` (priority, then continue an unmerged stack, then issue number) and defers an issue whose open dependency is not closed, `ready`, `awaiting-merge` or open-PR. "Does this issue already have a PR?" uses `pr_chain` (`Closes`/`Fixes`/`Resolves #N` or `feature/<N>-`), never GitHub search. Scope agents put **code dependencies in the body**, not in `blocked`.
 
-`pr-loop` does **not** ship issues in random open order. `ready_label_candidates` in `loop-common.sh`:
+**Loop-driven dependency chains (`ORCH_BASE_BRANCH`).** When a dependency's PR is still open, the loop exports `ORCH_BASE_BRANCH` as that PR's head — or the **GitHub stack top** if that PR already has stacked children (never open a sibling against an ancestor). The issue is labeled `awaiting-merge` after its own PR opens. The agent contract:
 
-1. Only `ready` (skips `blocked` / `agent-*` / Epics).
-2. Parses `## Depends on` / `Depends on: #N` from the issue body.
-3. **Topological sort** among ready issues (priority, then **continue an unmerged stack** before unrelated same-P work, then issue number).
-4. Defers a ready issue if an open dependency is not closed, not `ready`, and not `awaiting-merge` / open-PR (those stack through).
-5. “Does this issue already have a PR?” uses `pr_chain` (`Closes`/`Fixes`/`Resolves #N` or `feature/<N>-`). Never GitHub search `Closes #N in:body` (token-AND false positives).
-
-Scope agents must put **code dependencies in the body**, not in the `blocked` label. See `gh-scope-issue` → *Dependencies vs park labels*.
-
- Mode A does **not** auto-split work into multi-layer stacks (that is mode B). It makes the orchestrator and pr-loop **safe and correct** when a stack exists or when `ORCH_STACK=1` prefers stack tooling.
-
-### Detect once (Phase 0)
-
-pr-loop **bootstraps stacks every run** (`ensure_gh_stack_ready` in `loop-common.sh`):
-installs `github/gh-stack` if missing, probes `GET /repos/{repo}/stacks`, sets local
-git knobs (`rerere`, `remote.pushDefault`). Env exported into the agent process:
-
-| Env | Meaning |
-|-----|---------|
-| `ORCH_STACK` | `auto` (default) \| `1` \| `0` |
-| `ORCH_STACK_CLI` | `1` if `gh stack` works |
-| `ORCH_STACK_REPO_OK` | `1` if Stacks API answered 2xx for this repo |
-| `ORCH_STACK_READY` | `1` only when both CLI + repo probe OK |
-| `ORCH_BASE_BRANCH` | Branch this issue must fork from (default branch when unset). pr-loop sets it to a dependency's open-PR head when stacking through an unmerged chain |
-
-### Loop-driven dependency chains (`ORCH_BASE_BRANCH`)
-
-pr-loop ships whole `## Depends on` chains without waiting for human merges:
-when a dependency's PR is still open, the loop exports `ORCH_BASE_BRANCH` as
-that PR's head — or the **GitHub stack top** if that PR already has stacked
-children (never open a sibling against an ancestor). The issue is labeled
-`awaiting-merge` after its own PR opens. The agent contract:
-
-1. Fork the feature branch from `origin/$ORCH_BASE_BRANCH` (not from the
-   default branch).
-2. Open the PR with `--base "$ORCH_BASE_BRANCH"` so GitHub shows only this
-   layer's diff.
+1. Fork the feature branch from `origin/$ORCH_BASE_BRANCH` (not from the default branch).
+2. Open the PR with `--base "$ORCH_BASE_BRANCH"` so GitHub shows only this layer's diff.
 3. All diff ranges (review, fix verification) use `origin/$ORCH_BASE_BRANCH...HEAD`.
-4. **Never merge** such a PR from the agent or loop worker — the human lands
-   the whole chain with `gh stack merge <top-pr> --yes --squash` (or merges
-   bottom-up), and the next loop run restacks whatever remains.
-
-There is **no public GitHub API to flip “enable Stacked PRs” on a repo**. If the probe
-returns 404, log it and stay on the classic path (user must enable via plan / UI / waitlist).
-
-When not launched via pr-loop, probe yourself:
-
-```bash
-ORCH_STACK="${ORCH_STACK:-auto}"
-STACK_CLI="${ORCH_STACK_CLI:-0}"
-if [ "$STACK_CLI" != "1" ] && gh stack --help >/dev/null 2>&1; then
-  STACK_CLI=1
-fi
-if [ "$STACK_CLI" != "1" ] && [ "${ORCH_STACK_ENSURE:-1}" != "0" ]; then
-  gh extension install github/gh-stack 2>/dev/null || true
-  gh stack --help >/dev/null 2>&1 && STACK_CLI=1
-fi
-# Prefer ORCH_STACK_READY from the loop when present
-STACK_READY="${ORCH_STACK_READY:-$STACK_CLI}"
-```
-
-Write `stack_cli` / `stack_ready` into working notes. If `STACK_CLI=0` or `STACK_READY=0`, never call `gh stack *`; use the classic path.
-
-### When to use stack commands
-
-| Situation | Create / open | Iterate (fix+push) | Land (loop only if `ORCH_AUTO_MERGE=1`) |
-|-----------|---------------|---------------------|----------------------------------------|
-| `STACK_CLI=0` or `ORCH_STACK=0` | `git push` + `gh pr create --draft` | `git push` | `gh pr merge` / push-land |
-| Single branch, not in a chain (`ORCH_STACK=auto`) | Classic path (above) | Classic path | Classic path |
-| Already on a `gh stack` branch, or open PR base is another PR's head | `gh stack submit --auto` (drafts) | commit → `gh stack push` (rebase first if mid-stack fix: `gh stack rebase` then push) | `gh stack merge <pr> --yes --squash` |
-| `ORCH_STACK=1` and `STACK_CLI=1` | Prefer `gh stack init feature/<n>-<slug>` then implement; open with `gh stack submit --auto` | `gh stack push` | stack merge if chained; else classic |
-
-### Create path when using the stack CLI (`ORCH_STACK=1` or already stacked)
-
-```bash
-# From default branch, clean tree:
-gh stack init "feature/<issue-number>-<slug>"
-# ... implement + commit on this branch ...
-gh stack submit --auto    # drafts; non-interactive titles
-# Capture PR: gh pr view --json number,url
-```
-
-Do **not** also run `gh pr create` for the same branch. Body can be updated after submit:
-
-```bash
-gh pr edit <pr_number> --body "$(cat <<'EOF'
-Closes #<N>
-
-## Summary
-...
-EOF
-)"
-```
-
-### Iterate (review fixes / test fixes) on a stack
-
-```bash
-# On the branch that owns the finding:
-git add -A && git commit -m "fix: …"
-# If you edited a lower layer and need descendants updated:
-gh stack rebase
-gh stack push
-```
-
-Plain `git push` mid-stack often leaves upper PRs stale; prefer `gh stack push`.
-
-### Land (humans or pr-loop)
-
-```bash
-# Merge everything up to and including this PR (atomic):
-gh stack merge <pr_number> --yes --squash
-```
-
-pr-loop does this automatically when `ORCH_STACK!=0` and the PR is in an open chain (`loop-common.sh`).
+4. **Never merge** such a PR from the agent or loop worker — the human lands the whole chain with `gh stack merge <top-pr> --yes --squash` (or merges bottom-up), and the next loop run restacks whatever remains.
 
 ## State and scratch paths
 
@@ -361,17 +151,12 @@ mkdir -p "$scratch_dir" && chmod 700 "$scratch_dir"
 echo "$scratch_dir"
 ```
 
-Persist the review iteration counter (survives compaction better than memory alone):
+Persist across compaction (prefer absolute paths; shell variables don't survive separate tool calls):
 
-- `iter_file`: `${scratch_dir}/issue-<N>-review-iter.txt`
-
-Prefer absolute paths in later shell calls; do not rely on shell variables surviving across separate tool invocations.
-
-Optional host-specific extras (do not require them):
-
-- Kimi: `~/.kimi-code/tmp/`
-- Grok: `~/.grok/plugin-data/pr-orchestrator/`
-- Ori: (no default; use `scratch_dir` above)
+- `iter_file`: `${scratch_dir}/issue-<N>-review-iter.txt` — review iteration counter
+- `head_file`: `${scratch_dir}/issue-<N>-reviewed-head.txt` — HEAD SHA the last review iteration saw
+- `spec_file`: `${scratch_dir}/issue-<N>-spec.md` — the spec sections reviewers get (Phase 1)
+- `artifact_file`: `${scratch_dir}/issue-<N>-artifact.md` — the verification artifact (Phase 2)
 
 ## Workflow
 
@@ -403,76 +188,59 @@ Required semantics:
 ### Phase 0 — Lock context
 
 1. Read the skill argument for the issue number. If missing, ask once and stop if still missing.
-2. Optional goal: set objective
-   `Implement GitHub issue #<number>, run the thermonuclear review loop until clean, run pnpm test:all, and mark the PR ready for review`
-   (Kimi: `CreateGoal` · Grok: `update_goal` with `message` · Ori: `set_goal`).
+2. Optional goal (see references/hosts.md): `Implement GitHub issue #<number>, pass review and verification, pass the ship gate, and mark the PR ready for review`.
 3. Shell: `git branch --show-current`.
 4. Shell: `gh auth status` (or equivalent). If not authenticated, stop and report.
-5. Detect stack CLI + mode (see **GitHub Stacked PRs** above): `STACK_CLI`, `ORCH_STACK`.
+5. Detect stack CLI + mode (see *Base branch and stacks*): `STACK_CLI`, `ORCH_STACK`.
 6. Shell: `gh issue view <number> --json title,body,labels,number,state,url`.
 7. If the issue is closed, stop and report.
-8. Resolve the base branch: `BASE="${ORCH_BASE_BRANCH:-<default branch>}"`. When the loop exports `ORCH_BASE_BRANCH`, this issue stacks on an unmerged dependency PR — fork from it, never from the default branch (see *Loop-driven dependency chains*).
+8. Resolve the base branch: `BASE="${ORCH_BASE_BRANCH:-<default branch>}"`. When the loop exports `ORCH_BASE_BRANCH`, this issue stacks on an unmerged dependency PR — fork from it, never from the default branch.
 9. If on `main` or `master`, create the feature branch:
    - **Stack path** (`ORCH_STACK=1` and `STACK_CLI=1`): `gh stack init "feature/<issue-number>-<slug>"`
    - **Classic path** (default / auto): `git fetch origin "$BASE" && git checkout -b feature/<issue-number>-<slug> "origin/$BASE"`
-10. Create todos (Kimi: `TodoList` · Grok: `todo_write`, merge false on first create · Ori: track via comments / `update_goal`):
-   - Understand issue
-   - Implement
-   - React control scan
-   - Open draft PR
-   - Review loop
-   - Test gate
-   - Mark PR ready
+10. Create todos: Understand issue · Implement + verify · React control scan · Open draft PR · Review loop · Test gate · Mark PR ready.
 
 ### Phase 1 — Understand the issue
 
 1. Read the issue title and body carefully.
 2. Read `AGENTS.md` / `Agents.md` and project docs it references.
 3. Search the codebase for relevant files (host search tools; for broad sweeps use a role `explore` subagent).
-4. If the body is ambiguous, make a reasonable interpretation from `AGENTS.md` and proceed. If the issue contains `## API contract` with `API change: yes`, treat its OpenAPI file and contract delta as part of the implementation scope; this supplements the rest of the issue and does not replace normal acceptance criteria. Park `needs-input` **only** for a product / legal / budget decision a human must make:
+4. **Write `spec_file`:** copy these issue sections verbatim, whichever exist — `## Problem`, `## Reuse`, `## Proposed change (minimal)`, `## Implementation sketch`, `## Non-goals`, `## File change matrix`, `## Test plan`, `## Acceptance criteria`, `## API contract`. Older issues without a scope pass: copy the whole body. Every implementer, reviewer and verifier brief includes this file.
+5. If the body is ambiguous, make a reasonable interpretation from `AGENTS.md` and proceed. If the issue contains `## API contract` with `API change: yes`, treat its OpenAPI file and contract delta as part of the implementation scope; this supplements the rest of the issue and does not replace normal acceptance criteria. Park `needs-input` **only** for a product / legal / budget decision a human must make:
    ```bash
    gh issue edit <N> --add-label needs-input --remove-label ready
    gh issue comment <N> --body "needs-input: <the question>"
    ```
    Then **exit 0**. Do not use `blocked`. Do not `agent-failed`. The supervisor will pick the next ticket.
-5. Mark "Understand issue" done.
+6. Mark "Understand issue" done.
 
-### Phase 2 — Implement
+### Phase 2 — Implement and verify
 
-1. Spawn an **implementer subagent** (role `implement`, see *Cost routing*) with a complete brief:
-    - Issue number, title, body
+1. Spawn an **implementer subagent** (role `implement`, see *Cost routing*; per-host spawn notes in references/hosts.md) with a complete brief:
+    - Issue number, title, and `spec_file`
     - Relevant file paths
-    - Follow `AGENTS.md`; minimal scoped changes
+    - Follow `AGENTS.md`; minimal scoped changes. Call the helpers listed in `## Reuse`; do not re-implement what they own. Follow `## Implementation sketch` when present.
     - If the issue declares `API change: yes`, update the named OpenAPI file and implementation together; preserve the declared compatibility behavior
-    - Tests: implement exactly the scoped issue's `## Test plan` / `## QA / verification` contract — nothing more. The E2E artifact named there is the proof of correctness. **Do not add unit tests beyond what the scope agreed**, and add none at all when the contract names none. Targeted runs only; **do not** run `pnpm test:all` / full build
-    - Return summary of changes, commit SHAs if any, open questions
-
-   **Kimi:** `Agent` coder; non-interactive → background + `TaskOutput(block=true)`.
-   **Grok:** `spawn_subagent` with `subagent_type: "general-purpose"`, prefer `isolation: "worktree"`, `background: true`; wait with `get_command_or_subagent_output` (large `timeout_ms`, e.g. 1800000). If a worktree was used, fetch its HEAD onto the feature branch in the main repo before continuing (same idea as execute-plan worktree protocol).
-   **Ori:** prefer `task` with this result shape when the work is short and bounded:
-   `{ "status": "ok|needs-input|failed", "summary": "...", "changed_files": [], "commits": [], "tests": [] }`.
-   Use `spawn_agent` with a detailed brief for long work or when progress monitoring is useful; wait with `wait_agent`. Pass `model` only as a routing hint when explicitly configured; otherwise retain OpenRouter Auto.
-   **Claude:** `Agent` with `subagent_type` / `model` from the route, **`run_in_background: false`**: the call blocks and returns the subagent's result directly. Do not background it and wait for a completion notification; see *Claude: never end a turn on a pending wait*.
-
+    - **Red first for bugs:** run the Test plan's reproduction on the base branch and confirm it fails *before* changing code. If it passes on the base branch, the reproduction is wrong: fix the reproduction (or report `needs-input` if the bug can't be reproduced) before touching product code.
+    - **Visual / layout bugs:** the reproduction is browser-level (Playwright or the repo's equivalent) and saves a screenshot or trace. jsdom or unit tests are not proof of a layout fix.
+    - Tests: implement exactly the scoped issue's `## Test plan` / `## QA / verification` contract — nothing more. **Do not add unit tests beyond what the scope agreed**, and add none at all when the contract names none. Targeted runs only; **do not** run `pnpm test:all` / full build
+    - Return: summary of changes, changed files, commit SHAs, open questions, and the **verification artifact**: the exact command(s), the red result on the base branch (bugs), the green result on the branch, and any artifact path (output file, screenshot, trace, response snapshot)
 2. Inspect:
    - `git status --short`
-   - `git log --oneline -5` and/or `git diff --stat`
-   - Prefer `git diff --name-only origin/main...HEAD` (or `origin/master...HEAD`) when the branch has commits
+   - `git log --oneline -5` and/or `git diff --stat "origin/$BASE...HEAD"`
 3. If there are no changes, stop and report that the implementer produced no diff.
 4. Run any targeted tests the subagent skipped (commands from `AGENTS.md`).
 5. If those fail, spawn a fix subagent (role `fix`; hand long failure output to role `triage` first) before continuing.
-6. Ensure a commit exists, e.g. `feat: <issue title> (closes #N)`.
-7. Mark "Implement" done.
+6. **Verification artifact gate.** If the Test plan names a command or E2E and the implementer returned no green run of it (or no red run for a bug ticket), spawn a fix subagent once to produce it. Then write `artifact_file`: command(s), red result, green result, artifact paths. If it is still missing, write `artifact: missing — <reason>` and continue; the verifier FAILs it in Phase 4.
+7. Ensure a commit exists, e.g. `feat: <issue title> (closes #N)`.
+8. Mark "Implement + verify" done.
 
 ### Phase 2.5 — React control scan
 
-Cheap, **fail-open**, after implement and before the draft PR. Not a
-fourth review loop. Do not run a full-project score. Do not
-`agent-failed` if a scanner is missing, flaky, or the repo is not React.
+Cheap, **fail-open**, after implement and before the draft PR. Not a review iteration. Do not run a full-project score. Do not `agent-failed` if a scanner is missing, flaky, or the repo is not React.
 
 1. Mark "React control scan" in progress.
-2. Resolve skill files (same probe pattern as the thermonuclear baseline).
-   First readable path wins for each name:
+2. Resolve skill files (same probe pattern as the thermonuclear baseline). First readable path wins for each name:
 
 ```bash
 for name in react-doctor shadscan; do
@@ -488,38 +256,15 @@ done
 ```
 
 3. Read each readable file. Missing skill → skip that scanner, note it.
-4. Follow **Orchestrator control step** in `react-doctor`, then in
-   `shadscan`. Flags, JSON fields, and must-fix rules live in those
-   files — do not copy them here.
-5. If either scanner edited files, commit
-   (`fix: react-doctor / shadscan on #<N>`) before opening the PR.
-6. Record a one-line result for the later PR comment
-   (`clean` / `N errors remaining` / `skipped: <reason>` per scanner).
+4. Follow **Orchestrator control step** in `react-doctor`, then in `shadscan`. Flags, JSON fields, and must-fix rules live in those files — do not copy them here.
+5. If either scanner edited files, commit (`fix: react-doctor / shadscan on #<N>`) before opening the PR.
+6. Record a one-line result for the later PR comment (`clean` / `N errors remaining` / `skipped: <reason>` per scanner).
 7. Mark "React control scan" done.
 
 ### Phase 3 — Open a draft PR
 
 1. Mark "Open draft PR" in progress.
-2. **Stack path** (active `gh stack` / `ORCH_STACK=1` with CLI — see table above):
-
-```bash
-gh stack submit --auto
-# drafts by default with --auto; set title/body on the PR for this branch:
-gh pr edit --title "<issue title>" --body "$(cat <<'EOF'
-Closes #<N>
-
-## Summary
-<brief summary of changes>
-
-## Automated gates
-React control scan (react-doctor + shadscan) already ran on the branch.
-An automated thermonuclear review will run on this draft PR, followed by `pnpm test:all`.
-EOF
-)"
-```
-
-   If `gh stack submit` fails with exit 9 (Stacked PRs not enabled) or extension errors, fall back to the classic path and set `STACK_CLI=0` for the rest of the run.
-
+2. **Stack path** (active `gh stack` / `ORCH_STACK=1` with CLI): `gh stack submit --auto`, then `gh pr edit` title/body — see references/stacks.md → *Create*. Same body as the classic path below.
 3. **Classic path** (default):
 
 ```bash
@@ -527,8 +272,7 @@ git push -u origin <branch>
 # ORCH_BASE_BRANCH is always set by loop-issue-worker.sh — stacked on an
 # unmerged dep PR, a profile's opt-in ORCH_BASE_BRANCH_DEFAULT (e.g. a
 # product that integrates on `dev` instead of the repo's real default
-# branch), or the repo's actual default branch as the final fallback:
-#   gh pr create --draft --base "$ORCH_BASE_BRANCH" ...
+# branch), or the repo's actual default branch as the final fallback.
 gh pr create --draft \
   ${ORCH_BASE_BRANCH:+--base "$ORCH_BASE_BRANCH"} \
   --title "<issue title>" \
@@ -538,30 +282,48 @@ Closes #<N>
 ## Summary
 <brief summary of changes>
 
+## Deviations from the spec
+<files or behavior outside ## File change matrix / ## Proposed change, each with the reason — or "None">
+
 ## Automated gates
 React control scan (react-doctor + shadscan) already ran on the branch.
-An automated thermonuclear review will run on this draft PR, followed by `pnpm test:all`.
+Structure review and correctness/spec verification run on this draft PR, followed by the ship gate.
 EOF
 )"
 ```
 
 4. Capture PR number/url: `gh pr view --json number,url`.
-5. If Phase 2.5 produced a scanner result, comment it
-   (`ℹ️ React control scan: react-doctor {result} · shadscan {result}`).
-6. Mark "Open draft PR" done.
+5. Post the verification artifact (from `artifact_file`):
+   ```bash
+   gh pr comment <pr_number> --body "<!-- verification-artifact -->
+   🔬 Verification artifact
+   - Command: \`<command>\`
+   - Base branch (red): <result or n/a for non-bugs>
+   - This branch (green): <result>
+   - Artifact: <path / snapshot / screenshot / trace>"
+   ```
+6. If Phase 2.5 produced a scanner result, comment it (`ℹ️ React control scan: react-doctor {result} · shadscan {result}`).
+7. Mark "Open draft PR" done.
 
 ### Phase 4 — Review loop via PR comments (max 3 iterations)
+
+Each iteration runs **two reviewers in parallel**, each with its own verdict. Never merge or rerank their findings: a PASS on one axis must not hide a FAIL on the other.
+
+| Reviewer | Role / Claude agent | Judges |
+|----------|---------------------|--------|
+| Structure | `review` / `loop-reviewer` | Maintainability per the thermonuclear baseline: abstractions, duplication, layering, file size, test inflation |
+| Verifier | `verify` / `loop-verifier` | Correctness first (producers traced, edge classes answered, each bug with a breaking input), then every acceptance criterion, scope vs file matrix, artifact |
 
 **CRITICAL:**
 
 - Strictly **3** review iterations max. Never a 4th.
 - No `pnpm test:all` / full build in this phase.
-- Only: review → post findings → fix → push.
-- Test gate only after PASS (or hard stop).
+- Only: review + verify → post findings → fix → push.
+- Test gate only after both PASS (or hard stop).
 
 **Review baseline (once, before iteration 1):**
 
-1. Resolve absolute path to `thermo-nuclear-code-quality-review` `SKILL.md` with `resolve_skill_path thermo-nuclear-code-quality-review` (or the equivalent helper). Use the first readable candidate:
+1. Resolve the absolute path to `thermo-nuclear-code-quality-review` `SKILL.md`. Use the first readable candidate:
 
 ```bash
 for p in \
@@ -578,7 +340,7 @@ done
    Also acceptable: take the path from your host's skill listing if it exposes one. Do not hardcode a single machine path without probing.
 
 2. Read that file yourself to confirm it is readable. If missing/unreadable, STOP. Never run a degraded review without the baseline.
-3. Use that path as `<baseline_path>` in every reviewer subagent prompt. Reviewer subagents have **no** Skill tool — they must `Read` / `read_file` the baseline file.
+3. Use that path as `<baseline_path>` in every structure-reviewer prompt. Reviewer subagents have **no** Skill tool — they must read the baseline file.
 
 **Iteration tracking:**
 
@@ -589,8 +351,6 @@ echo 1 > "<iter_file>"
 **Loop body:**
 
 ```
-Set iteration = N from <iter_file> (start at 1)
-
 WHILE true:
   1. Read <iter_file> → N
   2. If N > 3:
@@ -603,25 +363,26 @@ WHILE true:
        git diff --name-only "origin/${ORCH_BASE_BRANCH:-main}...HEAD" 2>/dev/null \
          || git diff --name-only origin/master...HEAD \
          || git diff --name-only HEAD~1
-  5. Spawn reviewer subagent (role `review`, `--review-iter N`; prompt below), background, wait for completion
-  6. Parse BASELINE + VERDICT
-  7. If VERDICT == PASS:
-       - Post passing PR comment
+     Iteration ≥ 2: also the fix range `<SHA in head_file>..HEAD`.
+  5. Write `git rev-parse HEAD` to <head_file>.
+  6. Spawn BOTH in parallel and wait for both (Claude: two Agent calls in one message):
+       - structure reviewer (role `review`, `--review-iter N`; prompt below)
+       - verifier (role `verify`, `--review-iter N`; prompt below)
+  7. Parse the reviewer's BASELINE + VERDICT and the verifier's VERDICT.
+  8. If both PASS:
+       - Post passing PR comment (both verdicts)
        - Break
-  8. If VERDICT == FAIL:
+  9. If either FAILs:
        - If N == 3: STOP, post findings, do not spawn fix, report
-       - Else: post findings with marker <!-- thermonuclear-review-iter-N -->
+       - Else: post findings with marker <!-- thermonuclear-review-iter-N -->, under
+         separate `### Spec`, `### Correctness`, `### Structure` headings (verbatim)
        - Spawn a fixer (role `fix`) for only those findings; commit + push
-       - If same substantive finding repeats across consecutive iterations, STOP
+       - If the same substantive finding repeats across consecutive iterations, STOP
        - N = N+1; write N to <iter_file>
-  9. Missing BASELINE: loaded or unparseable VERDICT → STOP (invalid review)
+ 10. Missing `BASELINE: loaded`, or an unparseable VERDICT from either → STOP (invalid review)
 ```
 
-**Reviewer subagent prompt:**
-
-For Ori, request a structured result with `result_schema` when using `task`:
-`{ "baseline": "loaded|missing", "verdict": "PASS|FAIL", "findings": [{ "path": "...", "issue": "...", "suggested_fix": "..." }], "notes": [] }`.
-The textual format below remains the interchange format for Kimi/Grok/Claude and for shell adapters. The reviewer model comes from `routing.py route review`. Never hard-code a provider model.
+**Structure reviewer prompt:**
 
 ```
 Run a thermo-nuclear code quality review on the current branch changes for draft PR #<pr_number>.
@@ -629,9 +390,12 @@ Run a thermo-nuclear code quality review on the current branch changes for draft
 This is review iteration <iteration> of 3. On iteration 3, any remaining actionable findings will cause the loop to stop without further fixes. Be decisive: output PASS if previous findings have been addressed and no new structural blockers exist.
 
 Focus on these files: <comma-separated paths>
+<Iteration ≥ 2 only:> Fix range since your last review: <prev_head>..HEAD. Previous findings (confirm each is resolved): <paste the previous Structure findings>
 
-Scoped test plan (from issue #<issue_number>): <paste the issue's ## Test plan section verbatim, or "none — a new unit test FAILs unless the PR body justifies it per product AGENTS.md → Tests (a)/(b)/(c)">
-Apply baseline §8: FAIL unit tests the test plan does not name, and mock-wiring/tautology tests; golden fixtures, E2E specs and edits to existing tests are exempt.
+Issue spec (from issue #<issue_number>, verbatim): <contents of spec_file>
+Use `## Reuse` to judge duplication: re-implementing a listed helper is a finding.
+Apply baseline §8 against the spec's `## Test plan` (or, when it has none: a new unit test FAILs unless the PR body justifies it per product AGENTS.md → Tests (a)/(b)/(c)): FAIL unit tests the test plan does not name, and mock-wiring/tautology tests; golden fixtures, E2E specs and edits to existing tests are exempt.
+Correctness and spec compliance are judged by a separate verifier. Do not report them.
 
 You do not have a Skill tool — do NOT attempt to invoke /thermo-nuclear-code-quality-review or /skill:thermo-nuclear-code-quality-review.
 Instead, use your host's read-file tool to read this file IN FULL before inspecting the diff; it is the review baseline you must apply rigorously:
@@ -658,43 +422,83 @@ Be decisive. If previous findings have been addressed and no new structural bloc
 Do not explain your reasoning outside these sections.
 ```
 
-**When VERDICT is FAIL** (and N < 3):
+**Verifier prompt:**
+
+```
+Verify draft PR #<pr_number> for issue #<issue_number>: does it do what the spec says, and is it correct?
+
+This is verification iteration <iteration> of 3.
+Diff range: origin/<base>...HEAD. Changed files: <comma-separated paths>
+<Iteration ≥ 2 only:> Fix range since your last pass: <prev_head>..HEAD. Previous Spec/Correctness findings (confirm each is resolved): <paste them>
+
+Issue spec (verbatim): <contents of spec_file>
+Verification artifact (verbatim): <contents of artifact_file>
+PR body "Deviations from the spec": <paste>
+
+Correctness first. Trace every value the new code consumes to its producer (across services and languages in this repo) and state what it returns for no data, partial data, several entities and failure; types are not evidence. Existing behavior the diff newly relies on is in scope. Do not judge style or structure; another reviewer owns that.
+
+Your response must use this exact format:
+
+CORRECTNESS: PASS|FAIL
+- Producers traced: <call → producer file:line → what it returns for empty / partial / multi-entity / failure>
+- Edge classes: unknown-as-0 <ok|finding|n/a> · zero denominators <…> · multi-entity <…> · failure reported as success <…> · partial/transient failure commits or sends <…> · dry run writes <…> · timezones <…> · empty rows <…>
+1. [Only if FAIL] <file:line>: <bug>. Breaking input: <concrete input or state>. Wrong result: <what the user sees>. Suggested fix: <concrete change>.
+
+SPEC: PASS|FAIL
+- "<acceptance criterion, quoted>": met|partial|missing — <file:line evidence>
+- Scope: ok | <files/modules outside the matrix, or built non-goals, or re-implemented Reuse helpers, without a justified deviation>
+- Artifact: ok | missing | red — <detail>
+
+VERDICT: PASS|FAIL
+
+FAIL when there is any correctness finding (including should-fix-before-users problems), any criterion is partial or missing, the artifact is missing or red, or scope creep is unjustified. Each correctness finding needs a concrete breaking input. Do not introduce new low-severity findings in later iterations.
+```
+
+**When either verdict is FAIL** (and N < 3):
 
 ```bash
 gh pr comment <pr_number> --body "<!-- thermonuclear-review-iter-<iteration> -->
-🧪 Automated thermonuclear review findings (iteration <iteration> of 3):
+🧪 Automated review findings (iteration <iteration> of 3):
 
-<paste findings>
+### Spec
+<verifier SPEC block, or 'PASS'>
+
+### Correctness
+<verifier CORRECTNESS findings, or 'PASS'>
+
+### Structure
+<reviewer FINDINGS, or 'PASS'>
 
 Please address the above findings and push updates."
 ```
 
-Then spawn/resume implementer:
+Then spawn the fixer (role `fix`):
 
 ```
-Address the thermonuclear review findings on draft PR #<pr_number>.
+Address the review findings on draft PR #<pr_number>.
 
 Read the latest review comments with: gh pr view <pr_number> --comments
-Focus on comments marked "<!-- thermonuclear-review-iter-<iteration> -->".
+Focus on the comment marked "<!-- thermonuclear-review-iter-<iteration> -->".
 
-Do not change behavior. Make minimal, structural improvements as requested.
+Spec and Correctness findings: change behavior exactly as each finding requires, and rerun the verification artifact command so it stays green (update the PR's verification-artifact comment if its result changed).
+Structure findings: do not change behavior; make minimal structural improvements as requested.
 Do not add unit tests beyond the issue's `## Test plan`.
-Do NOT run pnpm test:all, pnpm build, or any full test/build suite. Only make the requested code changes.
+Do NOT run pnpm test:all, pnpm build, or any full test/build suite.
 Commit and push your changes.
 If this branch is part of a GitHub stack (gh stack), push with: gh stack push
 (and gh stack rebase first if you edited a lower layer). Otherwise: git push.
-Return a summary of changes.
+Return, per finding: fixed / not fixed (reason).
 ```
 
 **Hard stop** (comment on PR + report to user):
 
 - Would exceed 3 iterations
-- `VERDICT == FAIL` on iteration 3
+- Either verdict FAIL on iteration 3
 - Same substantive finding in two consecutive iterations
-- Unparseable `VERDICT`
+- Unparseable `VERDICT` from either reviewer
 - Missing `BASELINE: loaded` or `BASELINE: MISSING`
 
-Do not enter the test gate without a clean PASS.
+Do not enter the test gate without both PASS.
 
 Mark "Review loop" done on PASS.
 
@@ -737,9 +541,9 @@ Mark "Review loop" done on PASS.
    - Classify: product failure vs flake (eval timeout, network, corrupted cargo index).
    - Product: post summary, spawn fix subagent, re-run gate once more (**max 2 total attempts**).
    - Flake only (rare with evals skipped): re-run gate once with no code change; if still fail, stop and report.
- 8. Mark "Test gate" done.
+8. Mark "Test gate" done.
 
-**Why this is faster:** On PageSeeds, `pnpm test:all` = rust + **live LLM evals** + lint + tsc + vitest + checks + full vite build. Live evals alone often take 10–30+ minutes and flake (wrong LLM categories), forcing full-suite retries. CI only runs ~4 minutes of rust + lint/typecheck; the loop should track that, not paid LLM regression suites.
+**Why the deterministic subset:** on PageSeeds, `pnpm test:all` = rust + **live LLM evals** + lint + tsc + vitest + checks + full vite build. Live evals alone often take 10–30+ minutes and flake, forcing full-suite retries. CI only runs ~4 minutes of rust + lint/typecheck; the loop should track that, not paid LLM regression suites.
 
 ### Phase 6 — Mark PR ready for review
 
@@ -749,14 +553,14 @@ Mark "Review loop" done on PASS.
 
 ```
 This PR is ready for review.
+- 🔬 Verification artifact: `<command>` red → green (see verification-artifact comment)
 - ℹ️ React control scan: react-doctor {result} · shadscan {result}
-- ✅ Thermonuclear review passed (<N> iteration(s))
+- ✅ Structure review + correctness/spec verification passed (<N> iteration(s))
 - ✅ Ship gate green (`<exact command>` — live LLM evals not run in the automated loop)
 ```
 
 4. Report PR URL to the user.
-5. Mark all todos done. Optional: complete the goal (Kimi goal done · Grok `update_goal` with `completed: true` · Ori `update_goal` with `completed: true`).
-6. If you created worktrees, clean them up when the host supports it (e.g. `grok worktree rm --force <path>`).
+5. Mark all todos done. Optional: complete the goal and clean up worktrees you created (references/hosts.md).
 
 ## Safety rules
 
@@ -775,9 +579,10 @@ At the end of a successful run, report:
 - Issue number and title
 - Branch name
 - PR URL
-- Number of review iterations and final verdict
+- Verification artifact (command, red → green)
+- Number of review iterations and both final verdicts
 - Test result (`pnpm test:all` or project equivalent)
-- Host used (`kimi` or `grok` or `ori`)
+- Host used (`kimi`, `grok`, `ori` or `claude`)
 - Note that the PR is ready for review
 - Reminder: manual QA is still required before approving
 
@@ -786,11 +591,12 @@ At the end of a successful run, report:
 | Skill | Role |
 |-------|------|
 | `pr-orchestrator` | **Call-analyzer thick overlay** (dual-host): same loop + `pnpm test:all`/dev stack + UI gate + real-user QA. Use only in call-analyzer; profile `ORCH_SKILL=/pr-orchestrator`. |
+| `gh-scope-issue` | Writes the spec sections (`## Reuse`, `## Test plan`, `## Acceptance criteria`, …) this skill copies into `spec_file` |
 | `react-doctor` | Phase 2.5 React health scan. Policy + flags live in that skill’s *Orchestrator control step*. |
 | `shadscan` | Phase 2.5 shadcn/ui scan when official shadcn is present. Same pattern. |
-| `thermo-nuclear-code-quality-review` | Review baseline loaded via read-file into reviewer subagents |
+| `thermo-nuclear-code-quality-review` | Structure-review baseline, read by reviewer subagents |
 | `ship-loop` (PATH) | Walk-away: scope then ship; `--ask` prints leftovers |
-| `pr-loop` (PATH) / `loop-ready-issues.sh` | Unattended Ready-column runner; **`--profile NAME`** + `--agent kimi\|grok\|ori` |
+| `pr-loop` (PATH) / `loop-ready-issues.sh` | Unattended Ready-column runner; **`--profile NAME`** + `--agent kimi\|grok\|ori\|claude` |
 | `pr-loop-setup` (PATH) / `setup-profile.sh` | Create/refresh `profiles/<name>.env` |
 | `profiles/*.env` | Per-product board/repo config **shared with scope-loop** (txApp, pageseeds-app, …) |
 | `scope-loop` (PATH) / `scope-all.sh` | Unattended Scoping-column runner; same `--profile NAME` as pr-loop |
