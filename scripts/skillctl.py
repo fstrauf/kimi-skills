@@ -12,7 +12,8 @@ Declarative registry (skills-registry.yaml) + apply / verify / doctor.
 
 Stability model:
   - Registry names the *one* canonical path per skill.
-  - Install paths are always SKILL.md symlinks to that canonical file.
+  - Install paths are always SKILL.md symlinks to that canonical file, plus a
+    references/ dir symlink when the canonical skill has one.
   - Root links (~/.kimi-code/skills, ~/.agents/skills) point at kimi-skills.
   - verify fails if anything drifts; re-run apply after moving a skill.
 """
@@ -139,6 +140,9 @@ def apply_root_links(reg: dict, dry_run: bool) -> list[str]:
 # ── skill installs ─────────────────────────────────────────────────────────
 
 
+REFERENCES = "references"
+
+
 def expected_installs(name: str, meta: dict) -> list[Path]:
     """Install directories that should contain SKILL.md -> canonical/SKILL.md."""
     out: list[Path] = []
@@ -177,6 +181,11 @@ def check_skill(name: str, meta: dict) -> list[str]:
                 f"{name}: install points elsewhere: {short(inst_md)} -> "
                 f"{short(tgt) if tgt else '?'} (want {short(canon_md)})"
             )
+        canon_refs = canon_dir / REFERENCES
+        if canon_refs.is_dir():
+            inst_refs = inst_dir / REFERENCES
+            if not inst_refs.is_symlink() or not same_file(inst_refs, canon_refs):
+                errors.append(f"{name}: install missing {short(inst_refs)} link")
     return errors
 
 
@@ -202,6 +211,30 @@ def apply_skill(name: str, meta: dict, dry_run: bool) -> list[str]:
         if inst_md.is_symlink() or inst_md.exists():
             inst_md.unlink()
         inst_md.symlink_to(target)
+    actions += _apply_references(canon_dir, expected_installs(name, meta), dry_run)
+    return actions
+
+
+def _apply_references(canon_dir: Path, inst_dirs: list[Path], dry_run: bool) -> list[str]:
+    """SKILL.md links relative files under references/; installs need the same dir."""
+    canon_refs = canon_dir / REFERENCES
+    if not canon_refs.is_dir():
+        return []
+    target = canon_refs.resolve()
+    actions: list[str] = []
+    for inst_dir in inst_dirs:
+        inst_refs = inst_dir / REFERENCES
+        if inst_refs.resolve() == target:
+            continue
+        if inst_refs.exists() and not inst_refs.is_symlink():
+            raise SystemExit(f"Refusing to replace real directory: {inst_refs}")
+        actions.append(f"link {short(inst_refs)} -> {short(target)}")
+        if dry_run:
+            continue
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        if inst_refs.is_symlink():
+            inst_refs.unlink()
+        inst_refs.symlink_to(target, target_is_directory=True)
     return actions
 
 
