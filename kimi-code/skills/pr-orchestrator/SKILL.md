@@ -243,7 +243,14 @@ Final automated safety gate before ready. Implements the "Automated PR Orchestra
 
 1. Mark "Mark PR ready" in progress.
 2. `gh pr ready <pr_number>`.
-3. **Write the completion state marker** (required — the loop worker will not treat this PR as done without it):
+3. **Cost report** (same step as generic Phase 6 — skip the PR comment when `ORCH_COST_REPORT=0`):
+   ```bash
+   cost_tool="$(dirname "${ORCH_ROUTING_TOOL:-$HOME/.kimi-code/skills/pr-orchestrator-generic/routing.py}")/cost_report.py"
+   python3 "$cost_tool" usage --host "$ORCH_HOST" --since <run_start> --append
+   python3 "$cost_tool" report --issue <N> --days 7
+   ```
+   Post a compact PR comment from the report's `routes:` / `spend:` lines (`💰 Cost: …`). Mechanism and knobs: [docs/github-loop.md](../../../docs/github-loop.md) → Cost visibility.
+4. **Write the completion state marker** (required — the loop worker will not treat this PR as done without it):
    ```bash
    state_target="${ORCH_STATE_PR_N:-`gh pr view --json number -q .number`}"  # empty → fall back below
    REPO_MATCH="$(gh repo view --json nameWithOwner -q .nameWithOwner)" python3 "$ORCH_STATE_TOOL" \
@@ -251,7 +258,7 @@ Final automated safety gate before ready. Implements the "Automated PR Orchestra
      || gh pr comment <pr_number> --body "<!-- ship-loop-state phase=ready status=ok attempt=${ORCH_RESUME_ATTEMPT:-1} next=ready pr=<pr_number> -->"
    ```
    (If `ORCH_STATE_TOOL` is unset, post the marker comment directly with `gh pr comment`.)
-4. Final PR comment:
+5. Final PR comment:
 
 ```
 This PR is ready for review.
@@ -269,9 +276,9 @@ If Phase 7 skipped: `- ⏭️ Real-user QA skipped (no pipeline-affecting change
 
 If the content-only fast path was used (Phase 5 step 0), replace the test line with: `- ✅ Content-only reduced gate (validate:mdx + validate:links + blog unit tests[, + test:e2e:blog on route-set change]) — pnpm test:pr skipped`
 
-4. Report PR URL to the user. Include host used (`kimi` or `grok` or `ori`).
-5. Mark all todos done. Optional: complete the goal (Kimi · Grok `update_goal` with `completed: true` · Ori `update_goal` with `completed: true`).
-6. If you created worktrees, clean them up when the host supports it (e.g. `grok worktree rm --force <path>`).
+6. Report PR URL to the user. Include host used (`kimi` or `grok` or `ori`).
+7. Mark all todos done. Optional: complete the goal (Kimi · Grok `update_goal` with `completed: true` · Ori `update_goal` with `completed: true`).
+8. If you created worktrees, clean them up when the host supports it (e.g. `grok worktree rm --force <path>`).
 
 ## Safety rules
 

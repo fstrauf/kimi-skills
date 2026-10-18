@@ -1,0 +1,1 @@
+/Users/fstrauf/01_code/pageseeds/.agents/skills/competitor-review/SKILL.md

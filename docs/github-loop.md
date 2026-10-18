@@ -164,6 +164,15 @@ Every LLM step runs on the **cheapest model tier and lowest effort that does the
 - Knobs (profile or env): `ORCH_MAX_TIER=mid` bans the strong tier entirely; `ORCH_ROUTE_<ROLE>=tier:effort` pins one role.
 - Hosts: `claude` maps tiers to `haiku`/`sonnet`/`opus` (session via `--model` + `--settings effortLevel`; subagents via `claude/agents/loop-*.md` + the Agent `model` override). kimi/grok/ori run one model, so routing is a no-op for them.
 
+## Cost visibility
+
+Routing decisions and real spend are logged so under-routing ("too cheap for the job") is visible from data. One home: [`cost_report.py`](../kimi-code/skills/pr-orchestrator-generic/cost_report.py); skills only call it, they don't restate the mechanism.
+
+- **Audit log**: every `routing.py route|cli-args` call appends one JSONL line (role, tier, effort, model, size, attempt, review-iter, profile, issue) to `$ORCH_COST_LOG` (default `~/.orch-cost/routes.jsonl`). Fail-open: logging never breaks a route.
+- **Spend capture** (per run, orchestrator Phase 6 / overlay Phase 8): `cost_report.py usage --host $ORCH_HOST --since <run_start> --append` joins actual usage to the log. claude → USD by model from `~/.claude/projects/<cwd-slug>/*.jsonl`; kimi → tokens from `~/.kimi-code/sessions/**/wire.jsonl`; grok/ori → no on-disk usage store, reports `n/a`.
+- **PR comment**: compact `💰 Cost: …` comment with the per-role routes and spend. `ORCH_COST_REPORT=0` skips the comment (the log still accumulates).
+- **Periodic review**: `python3 cost_report.py report [--issue N] [--profile P] [--days N]` prints per-issue routes/spend plus escalation observations — a role that escalated (attempt ≥2, or L on review iter 3) is evidence its base tier is too cheap; pin a fix with `ORCH_ROUTE_<ROLE>=tier:effort` or raise the table entry in `routing.py`.
+
 ## Who does what
 
 | Actor | May | Must not |

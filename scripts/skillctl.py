@@ -195,11 +195,21 @@ def apply_skill(name: str, meta: dict, dry_run: bool) -> list[str]:
         inst_md = skill_md(inst_dir)
         if inst_md.is_symlink() and same_file(inst_md, canon_md):
             continue
+        if inst_dir.is_symlink():
+            # Legacy shape: install dir is a symlink to the canonical dir.
+            # Replace with a real dir + SKILL.md file symlink. Unlink the dir
+            # symlink BEFORE touching inst_md — unlinking inst_md through a
+            # symlinked dir would delete the canonical file itself.
+            actions.append(f"replace dir-symlink {short(inst_dir)} with real dir")
+            if dry_run:
+                continue
+            inst_dir.unlink()
         actions.append(f"link {short(inst_md)} -> {short(target)}")
         if dry_run:
             continue
         inst_dir.mkdir(parents=True, exist_ok=True)
         if inst_md.is_symlink() or inst_md.exists():
+            # inst_dir is a real directory here, so inst_md cannot be the canonical.
             inst_md.unlink()
         inst_md.symlink_to(target)
     return actions

@@ -47,7 +47,7 @@ sz "$HOME_DIR/.cache/puppeteer" "Puppeteer browsers"
 sz "$HOME_DIR/Library/Caches/com.microsoft.VSCode.ShipIt" "VS Code updater cache"
 sz "$HOME_DIR/Library/Caches/typescript" "TypeScript cache"
 
-hr "STALE PROJECT ARTIFACTS (node_modules / .next / target, untouched > ${STALE_DAYS}d)"
+hr "STALE PROJECT ARTIFACTS (node_modules / .next / target in projects idle > ${STALE_DAYS}d)"
 find "$HOME_DIR" \
   \( -path "$HOME_DIR/Library" \
      -o -path "$HOME_DIR/.Trash" \
@@ -77,6 +77,15 @@ find "$HOME_DIR" \
     base=$(basename "$d")
     # only treat 'target' as a Rust build dir when a Cargo.toml sits next to it
     if [ "$base" = "target" ] && [ ! -f "$(dirname "$d")/Cargo.toml" ]; then
+      continue
+    fi
+    # The artifact dir's own mtime only moves when top-level entries change, so
+    # a repo in daily use with unchanged deps looks "stale". Judge staleness by
+    # the owning project instead: skip if its git metadata or any source file
+    # changed within STALE_DAYS.
+    proj=$(git -C "$(dirname "$d")" rev-parse --show-toplevel 2>/dev/null || dirname "$d")
+    if [ -n "$(find "$proj/.git" -maxdepth 2 \( -name index -o -name HEAD -o -name FETCH_HEAD \) -mtime -"$STALE_DAYS" -print -quit 2>/dev/null)" ] ||
+       [ -n "$(find "$proj" -maxdepth 3 \( -name node_modules -o -name .next -o -name target -o -name .git \) -prune -o -type f -mtime -"$STALE_DAYS" -print -quit 2>/dev/null)" ]; then
       continue
     fi
     du -sh "$d" 2>/dev/null

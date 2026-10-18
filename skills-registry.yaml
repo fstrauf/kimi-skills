@@ -153,6 +153,18 @@ skills:
     install:
       - ~/01_code/kimi-skills/kimi-code/skills/video-clip
       - ~/.grok/skills/video-clip
+  competitor-review:
+    bucket: B2
+    canonical: ~/01_code/pageseeds/.agents/skills/competitor-review
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/competitor-review
+      - ~/.grok/skills/competitor-review
+  competitor-catalog-hub:
+    bucket: B2
+    canonical: ~/01_code/pageseeds/.agents/skills/competitor-catalog-hub
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/competitor-catalog-hub
+      - ~/.grok/skills/competitor-catalog-hub
   reddit-engage:
     bucket: B2
     notes: "Canonical pageseeds; was duplicated as real files in kimi-skills + ~/.grok"

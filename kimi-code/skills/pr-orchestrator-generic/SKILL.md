@@ -414,6 +414,7 @@ Required semantics:
    - Review loop
    - Test gate
    - Mark PR ready
+11. Record `run_start=$(date +%s)` for the Phase 6 cost report — carry it as a literal value in your working notes, same as `BASE` (shell env does not persist between tool calls).
 
 ### Phase 1 — Understand the issue
 
@@ -736,7 +737,16 @@ Mark "Review loop" done on PASS.
 
 1. Mark "Mark PR ready" in progress.
 2. `gh pr ready <pr_number>`.
-3. Final comment:
+3. **Cost report** (skip the PR comment when `ORCH_COST_REPORT=0`; the `usage --append` log write still runs so cross-run reporting keeps working):
+   ```bash
+   cost_tool="$(dirname "${ORCH_ROUTING_TOOL:-$HOME/.kimi-code/skills/pr-orchestrator-generic/routing.py}")/cost_report.py"
+   python3 "$cost_tool" usage --host "$ORCH_HOST" --since <run_start> --append   # logs this run's spend
+   python3 "$cost_tool" report --issue <N> --days 7                              # routes + spend summary
+   ```
+   Post a compact PR comment from the report's `routes:` / `spend:` lines, e.g.
+   `💰 Cost: implement mid ×2 · review mid ×1 · explore cheap ×4 — spend $1.84 (claude: sonnet $1.84)`.
+   Mechanism and knobs: [docs/github-loop.md](../../../docs/github-loop.md) → Cost visibility.
+4. Final comment:
 
 ```
 This PR is ready for review.
@@ -745,9 +755,9 @@ This PR is ready for review.
 - ✅ Ship gate green (`<exact command>` — live LLM evals not run in the automated loop)
 ```
 
-4. Report PR URL to the user.
-5. Mark all todos done. Optional: complete the goal (Kimi goal done · Grok `update_goal` with `completed: true` · Ori `update_goal` with `completed: true`).
-6. If you created worktrees, clean them up when the host supports it (e.g. `grok worktree rm --force <path>`).
+5. Report PR URL to the user.
+6. Mark all todos done. Optional: complete the goal (Kimi goal done · Grok `update_goal` with `completed: true` · Ori `update_goal` with `completed: true`).
+7. If you created worktrees, clean them up when the host supports it (e.g. `grok worktree rm --force <path>`).
 
 ## Safety rules
 

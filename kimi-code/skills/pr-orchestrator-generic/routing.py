@@ -30,6 +30,10 @@ CLI:
       (model/agent empty on hosts without tier routing)
   routing.py cli-args <role> [same flags]
       print top-level session CLI flags for the host (empty for no-op hosts)
+
+Cost audit: every route/cli-args call appends one JSONL line to
+$ORCH_COST_LOG (default ~/.orch-cost/routes.jsonl). Fail-open — logging
+errors never break a route. cost_report.py reads this log.
 """
 
 from __future__ import annotations
@@ -40,6 +44,8 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 TIERS = ("cheap", "mid", "strong")
 EFFORTS = ("low", "medium", "high")
@@ -155,6 +161,39 @@ def cli_args(r: Route, host: str) -> list[str]:
     return ["--model", r.model, "--settings", settings]
 
 
+def cost_log_path(env: dict[str, str] | None = None) -> Path:
+    env = os.environ if env is None else env
+    return Path(env.get("ORCH_COST_LOG") or Path.home() / ".orch-cost" / "routes.jsonl")
+
+
+def log_route(cmd: str, r: Route, args: argparse.Namespace, env: dict[str, str] | None = None) -> None:
+    """Append one JSONL audit line for a route/cli-args call. Fail-open by design."""
+    env = os.environ if env is None else env
+    try:
+        path = cost_log_path(env)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "cmd": cmd,
+            "host": (args.host or "").lower(),
+            "role": args.role,
+            "size": (args.size or DEFAULT_SIZE).upper(),
+            "attempt": args.attempt,
+            "review_iter": args.review_iter,
+            "tier": r.tier,
+            "effort": r.effort,
+            "model": r.model,
+            "agent": r.agent,
+            "profile": env.get("ORCH_PROFILE", ""),
+            "issue": env.get("ORCH_STATE_ISSUE_N") or env.get("ORCH_ISSUE", ""),
+            "cwd": os.getcwd(),
+        }
+        with path.open("a") as fh:
+            fh.write(json.dumps(line) + "\n")
+    except OSError:
+        pass
+
+
 def _read_body(path: str) -> str:
     if path == "-":
         return sys.stdin.read()
@@ -188,6 +227,7 @@ def main(argv: list[str]) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    log_route(args.cmd, r, args)
     if args.cmd == "route":
         print(r.line())
     else:

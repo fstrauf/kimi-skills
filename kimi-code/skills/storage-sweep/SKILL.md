@@ -45,6 +45,9 @@ bash <skill-dir>/scan.sh
 ```
 
 `STALE_DAYS` defaults to 60; override only if the user asks (`STALE_DAYS=30 bash scan.sh`).
+Staleness is judged by the **owning project** (git metadata / source files), not the
+artifact dir's own mtime — an active repo with unchanged deps is never listed. Never
+hand-add artifact dirs from repos in active use (scheduled operator runs depend on them).
 
 Capture `df -h /` free space **before** any cleanup.
 
