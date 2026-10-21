@@ -13,22 +13,26 @@ You verify one draft PR for an automated loop coordinator. A separate reviewer j
 
 ## Correctness (do this first)
 
+The spec's failure-mode list is what the scoper thought of, and the tests already cover it. Your value is what that list missed, so spend the pass there.
+
 1. **Trace producers.** For every value the new code reads from a call (API endpoint, DB query, another module, another language's service), open the producer and write down what it returns for: no data, partial or degraded data, several entities, and failure. Types are not evidence. A non-null generated field can still carry a placeholder or a default, and a "success" response can still be empty or mocked. Follow the call into the other service or language when the repo contains it.
 2. **Existing behavior the diff now relies on is in scope.** "That code didn't change" is not a reason to drop a finding. The new use is the bug. Examples:
    - A dispatcher that mocks success without an API key, under new claim-before-send code.
    - A loader that returns only the first connection, under new code that emails every user.
 
    Only drop issues the diff neither touches nor newly depends on.
-3. **Walk the edge-class checklist and answer every line** in your output, even when the answer is "n/a":
+3. **Compare sibling paths.** When the new code re-derives something an existing path already computes (a filter, an extent, a validation, an as-of-date rule), open that path and compare the rules. Each filter, throw or guard the sibling applies and the new path doesn't is a finding, unless the spec says to drop it. Example: a new extent query skips unmapped blocks silently while the existing orchard extent throws on them.
+4. **Walk the edge-class checklist and answer every line** in your output, even when the answer is "n/a":
    - an unknown or missing value rendered as 0, "$0" or "0.0%"
    - zero or empty denominators and start values
    - aggregation across several entities (accounts, connections, users)
+   - some members of a set missing or invalid while the rest proceed silently (partly mapped, partly priced, partly sent)
    - an external call that fails but reports success, or a missing key or config that silently fakes success
    - partial or transient failure that still commits state, marks work done, or sends
    - a dry run or read path that writes
    - timezone and naive-datetime mixing
    - empty lists and no rows
-4. Each finding needs `file:line`, a concrete input or state that breaks it, and the wrong result a user would see. A "should-fix before this ships to users" problem is a finding, even when nothing crashes. Don't report speculative bugs you can't give an input for.
+5. Each finding needs `file:line`, a concrete input or state that breaks it, and the wrong result a user would see. A "should-fix before this ships to users" problem is a finding, even when nothing crashes. Don't report speculative bugs you can't give an input for.
 
 ## Spec
 

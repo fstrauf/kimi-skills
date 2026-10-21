@@ -5,8 +5,9 @@ description: >-
   after the initial brain dump, deletion-first simplification, architecture and
   documentation fit, root-cause (not symptom) fix, the existing helpers to reuse,
   file matrix, checkable acceptance criteria, and a failure-mode-first test
-  contract (red-first reproduction for bugs, E2E-preferred, verifiable artifact,
-  no post-hoc unit tests). Spec length scales with size. REST labels only
+  contract (tests pin decisions only, size budget, red-first reproduction for
+  bugs, E2E-preferred, verifiable artifact, no post-hoc or per-method tests).
+  Spec length scales with size. REST labels only
   (scoping → ready). Never implements product code.
   Use for "scope issue #N", "scope all", or scope-loop.
 ---
@@ -72,22 +73,34 @@ Name: violated invariant + `file:line` where invalid state is **created**. If yo
 
 Scoping decides **what must be proven**, not just what must be built. Every scoped issue carries a test contract.
 
+**What tests are for here.** The same pipeline writes the spec, the code and the tests, so a green suite only means "nothing we thought of broke". It doesn't show the feature is right. That job belongs to the independent verifier and human review. Tests have one job: **pin decisions** a later agent can't read from the code and might "fix". (KineX #945: 13 scoped scenarios and 765 integration tests were green, and a human reviewer still found two real gaps in minutes. Neither gap was on the failure-mode list.)
+
 1. **Failure modes first.** Before designing the fix, list every way the change could fail — bad input, boundary values, concurrency, partial failure, rollback, regression in the adjacent path. Always walk this edge-class checklist and keep the ones that apply:
    - an unknown or missing value rendered as 0 / "$0" / "0.0%"
    - zero or empty denominators and start values
    - aggregation across several entities (accounts, connections, users)
+   - some members of a set missing or invalid while the rest proceed silently (partly mapped, partly priced, partly sent)
    - an external call that fails but reports success; a missing key or config that silently fakes success
    - partial or transient failure that still commits state, marks work done, or sends
    - a dry run or read path that writes
    - timezone and naive-datetime mixing
    - empty lists and no rows
+
+   The failure-mode list feeds the design, `## Reuse` and the verifier. **It is not the test list.** Most failure modes are handled by the design and checked by the verifier. They don't each get a test.
 2. **Then design.** The change is the minimal thing that survives the failure-mode + delete passes.
 3. **Red first for bugs.** The first Test plan scenario reproduces the bug and **fails on today's main**, with its exact command. A fix whose test never went red proves nothing. (txApp shipped the same UI fix four times because nothing reproduced the bug first.)
-4. **E2E-first.** Preferred verification is an end-to-end test that exercises the real path (HTTP calls, UI flow, CLI invocation — whatever the user actually touches). **Visual or layout bugs need a browser-level check** (Playwright or the repo's equivalent) that saves a screenshot or trace; jsdom and unit tests can't see layout.
-5. **Verifiable artifact.** Every E2E test ends by producing a repeatable, checkable artifact: a command output, a file, a DB row, an API response snapshot, a screenshot — something a reviewer can re-run and compare. "Tests pass" is not the artifact.
-6. **Default zero new unit tests.** Never write unit tests after the code — tests written post-hoc only mirror what the code does. An isolation test is justified only when the scope names the specific failure mode it covers **and** states why an E2E test cannot drive that case — agreed in the scope, before implementation starts.
+4. **A scenario earns a test only if it:**
+   - **(a) reproduces the bug** red-first, or
+   - **(b) pins a product decision** a later agent could undo without noticing ("no areas → 409", "polygon beats blocks", "landscape → 422"). Write the decision as one sentence next to the scenario, or
+   - **(c) guards a high-blast-radius failure:** money, data loss or corruption, a send to users, auth and permissions.
 
-If the repo has a documented test convention or ship gate (`AGENTS.md`, test tiers), the plan must fit it — the contract is E2E-first *within* the repo's own gate, not instead of it.
+   Request shapes, field mapping, empty states and "renders the list" are the verifier's job, not tests. Tag each scenario `(a)`, `(b)` or `(c)`.
+5. **Budget by size.** New test scenarios, not counting the red-first reproduction: `S` ≤ 2 · `M` ≤ 4 · `L` ≤ 6. A decision table (one parameterised test over decision → expected outcome) counts as one scenario. Going over the budget needs one line per extra scenario saying why the verifier can't check it instead.
+6. **E2E-first.** Preferred verification is an end-to-end test that exercises the real path (HTTP calls, UI flow, CLI invocation — whatever the user actually touches). **Visual or layout bugs need a browser-level check** (Playwright or the repo's equivalent) that saves a screenshot or trace; jsdom and unit tests can't see layout. When a layer has no real-path harness (e.g. no browser E2E for a web client), say so. A test driven by fakes, stubs or a recording HTTP handler is an isolation test, not E2E, whatever framework runs it. It counts against the same budget and still needs (a)/(b)/(c). For that layer, prefer a manual QA artifact (a screenshot) to one fake-backed test per failure mode.
+7. **Verifiable artifact.** Every E2E test ends by producing a repeatable, checkable artifact: a command output, a file, a DB row, an API response snapshot, a screenshot — something a reviewer can re-run and compare. "Tests pass" is not the artifact.
+8. **No post-hoc or per-method tests.** Never write tests after the code; they only mirror what it does. Never plan one test per method, endpoint verb or field. Repo precedent (an existing `*ServiceTests` that does this) is not a reason to copy the pattern.
+
+If the repo has a documented test convention or ship gate (`AGENTS.md`, test tiers), the plan must fit it — the contract is E2E-first *within* the repo's own gate, not instead of it. Fitting the gate means the scenarios run inside it. It doesn't mean copying the repo's existing test volume.
 
 ## Data repairs (tickets that fix existing rows)
 
@@ -133,7 +146,7 @@ Same queue as `scope-all.sh` (`pr-orchestrator-generic/scope_queue.py`): open is
 
 1. **Find where the problem is produced**, not only where it is noticed.
 2. Explore with tools (and 1–2 explore subagents if useful, cost role `explore`: `python3 "${ORCH_ROUTING_TOOL:-$HOME/.kimi-code/skills/pr-orchestrator-generic/routing.py}" route explore --host "$ORCH_HOST"`; on Claude that is `Agent(subagent_type=loop-explorer)` with the routed model): call paths, existing modules that already do ≥80% of the ask, drift/duplication. Keep raw file reading in the subagents and bring back only `file:line` conclusions.
-3. **Reuse inventory:** every existing helper, module, type or pattern the change should call or extend, with `file:line` and what it owns. This becomes `## Reuse`. If two near-duplicates exist, name the canonical one.
+3. **Reuse inventory:** every existing helper, module, type or pattern the change should call or extend, with `file:line` and what it owns. This becomes `## Reuse`. If two near-duplicates exist, name the canonical one. **Sibling rules:** when the change re-derives something an existing path already computes (a filter, an extent, a validation, an as-of-date rule), name that path and list the rules the new one must match. For example: "the renderer only keeps orchards effective on the print date (`file:line`)", or "the orchard extent throws on unmapped blocks (`file:line`)". Both #945 gaps were sibling rules the new path dropped.
 4. **Architecture fit:** Which module owns this? Extend it vs new parallel path? Does the fix sit in the right layer?
 5. **Documentation fit:** Primary docs for the area — contradicts / extends / clarifies / untouched? If contract changes, ticket must require doc updates or `NOTE:`/`BUSINESS RULE:` comments. If no docs, say so — do not invent a mandatory doc index for repos that lack one. For an HTTP API change, also identify the product repository's canonical OpenAPI file and validation command; do not require OpenAPI for non-API work.
 6. Write symptom-vs-origin explicitly.
@@ -143,7 +156,7 @@ Same queue as `scope-all.sh` (`pr-orchestrator-generic/scope_queue.py`): open is
 Before designing:
 
 - Deletion candidates
-- **Failure modes first** — enumerate per the Test contract, including the edge-class checklist; this seeds `## Test plan`
+- **Failure modes first** — enumerate per the Test contract, including the edge-class checklist; this seeds the design, `## Reuse` sibling rules and `## Test plan`'s failure list. Only (a)/(b)/(c) scenarios become tests
 - Minimal surviving design + complexity budget
 - Explicit **non-goals** (what implementers must not build)
 - Split check: more than one shippable outcome → propose children, do not mega-scope
@@ -162,7 +175,7 @@ Required in every form:
 
 - **`## Reuse`** — from the Phase 3 inventory; `path:line` + what it owns. Write `_None — greenfield_` only when you searched and nothing fits, and say what you searched.
 - **`## Implementation sketch`** (M/L) — key signatures and data shapes and which file/layer each goes in. No full code: a sketch longer than the change has written the code.
-- **`## Test plan`** — per the Test contract (failure modes, red-first reproduction for bugs, browser check for visual bugs, artifact).
+- **`## Test plan`** — per the Test contract: failure modes, then only the scenarios that earn a test, each tagged (a)/(b)/(c) and within the size budget; red-first reproduction for bugs, browser check for visual bugs, artifact.
 - **`## Acceptance criteria`** — each criterion names how it's checked (command, E2E step, or observable artifact). The verifier quotes them one by one. Acceptance must include: the fix addresses the origin (`file:line`), not only the symptom; the test plan's artifact is reproducible by re-running the documented command(s); unit tests written after the implementation are **not** the proof. When `API change: yes`, also: the OpenAPI document describes the boundary and the repo's contract validation passes.
 - **`## File change matrix`** — the verifier flags files outside it. List every file you expect; an implementer who needs more must justify it in the PR.
 
@@ -187,6 +200,8 @@ Required in every form:
 - Implementing the feature “to verify” the scope
 - Scoping an issue without a `## Test plan`
 - Accepting post-hoc unit tests as proof of correctness
+- A Test plan with one scenario per failure mode, or over the size budget without a per-scenario reason
+- Fake-backed component or service tests presented as E2E; one test per method copied from repo precedent
 - **`blocked` because a dependency issue is still open or columns are not on main yet** — use `## Depends on` + `ready`
 - Epic children that all depend on the same ancestor (sibling PRs)
 

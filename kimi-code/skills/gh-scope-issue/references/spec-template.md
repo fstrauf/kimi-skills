@@ -61,11 +61,14 @@ Add the API contract section only when the issue changes an HTTP API.
 - Compatibility: additive / breaking / migration required
 ## File change matrix
 ## Test plan
-<!-- Failure modes first (incl. the edge-class checklist in SKILL.md), then the
-     E2E scenario(s) on the real path, each ending in a verifiable, repeatable
-     artifact. Bugs: the first scenario is a red-first reproduction with its
-     exact command. Visual/layout bugs: browser-level check + screenshot/trace.
-     Isolation/unit tests only where E2E genuinely cannot reach, agreed here. -->
+<!-- Failure modes first (incl. the edge-class checklist in SKILL.md). They feed
+     the design and the verifier; they are not the test list. Then only the
+     scenarios that earn a test, each tagged (a) red-first repro, (b) pinned
+     decision (state it in one sentence) or (c) blast radius, within the size
+     budget (S ≤ 2, M ≤ 4, L ≤ 6; a decision table counts as one). Each runs on
+     the real path and ends in a verifiable, repeatable artifact. Visual/layout
+     bugs: browser-level check + screenshot/trace. Fake-backed tests are
+     isolation tests, not E2E, and come out of the same budget. -->
 ## Non-goals
 ## Acceptance criteria
 - [ ] <criterion> — checked by: <command / E2E step / observable artifact>

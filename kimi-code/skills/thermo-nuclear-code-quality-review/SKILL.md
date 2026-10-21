@@ -194,6 +194,6 @@ Treat these as presumptive blockers unless the author can justify them clearly:
 - The PR solves a local problem by scattering feature checks across shared code.
 - The PR adds an unnecessary abstraction, wrapper, or cast-heavy contract that makes the design more indirect.
 - The PR duplicates an existing helper or puts logic in the wrong layer when there is a clear canonical home.
-- The PR adds unit tests not named in the scoped `## Test plan`, or mock-wiring/tautology tests (call-assert or SQL-substring as the main assertion; constants, defaults, re-exports). Golden fixtures, E2E specs and edits to existing tests are exempt.
+- The PR adds unit tests not named in the scoped `## Test plan`, or mock-wiring/tautology tests (call-assert or SQL-substring as the main assertion; constants, defaults, re-exports). Golden fixtures, E2E specs and edits to existing test cases are exempt; new cases added to an existing test file are not.
 
 If those conditions are not met, leave explicit, actionable feedback and push for a cleaner decomposition.
