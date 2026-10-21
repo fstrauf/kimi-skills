@@ -167,6 +167,13 @@ skills:
     install:
       - ~/01_code/kimi-skills/kimi-code/skills/growth-review
       - ~/.grok/skills/growth-review
+  pr-batch-review:
+    bucket: B2
+    notes: "Written in pageseeds (c571ddbe); kimi-skills held a real copy predating the 533f334c fix"
+    canonical: ~/01_code/pageseeds/.agents/skills/pr-batch-review
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/pr-batch-review
+      - ~/.grok/skills/pr-batch-review
 
 # Files that should not exist (stale archives / dead targets)
 cleanup:
