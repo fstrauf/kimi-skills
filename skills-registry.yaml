@@ -73,9 +73,6 @@ skills:
     canonical: ~/01_code/kimi-skills/kimi-code/skills/gh-ticket-hygiene
     install:
       - ~/.claude/skills/gh-ticket-hygiene
-  growth-review:
-    bucket: A
-    canonical: ~/01_code/kimi-skills/kimi-code/skills/growth-review
   posthog-weekly-insights:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/posthog-weekly-insights
@@ -163,6 +160,13 @@ skills:
     install:
       - ~/01_code/kimi-skills/kimi-code/skills/reddit-engage
       - ~/.grok/skills/reddit-engage
+  growth-review:
+    bucket: B2
+    notes: "Moved in-repo by pageseeds #393 (writes the program ledger); kimi-skills held a stale real copy"
+    canonical: ~/01_code/pageseeds/.agents/skills/growth-review
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/growth-review
+      - ~/.grok/skills/growth-review
 
 # Files that should not exist (stale archives / dead targets)
 cleanup:
