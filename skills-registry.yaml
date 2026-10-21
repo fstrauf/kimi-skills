@@ -123,30 +123,13 @@ skills:
   # ── B2: product multi-tenant (canonical under pageseeds) ────────────────
   # Install = SKILL.md symlink under universal catalog + ~/.grok/skills
   # so agents resolve the skill from any customer CWD (coffee, DTE, …).
-  weekly-seo:
+  pageseeds-run:
     bucket: B2
-    canonical: ~/01_code/pageseeds/.agents/skills/weekly-seo
+    notes: "v2 SEO loop (create / merge / prune lanes); replaces weekly-seo, weekly-seo-continue, weekly-seo-status and seo-program-review (retired in the v2 cutover)"
+    canonical: ~/01_code/pageseeds/.agents/skills/pageseeds-run
     install:
-      - ~/01_code/kimi-skills/kimi-code/skills/weekly-seo
-      - ~/.grok/skills/weekly-seo
-  weekly-seo-continue:
-    bucket: B2
-    canonical: ~/01_code/pageseeds/.agents/skills/weekly-seo-continue
-    install:
-      - ~/01_code/kimi-skills/kimi-code/skills/weekly-seo-continue
-      - ~/.grok/skills/weekly-seo-continue
-  weekly-seo-status:
-    bucket: B2
-    canonical: ~/01_code/pageseeds/.agents/skills/weekly-seo-status
-    install:
-      - ~/01_code/kimi-skills/kimi-code/skills/weekly-seo-status
-      - ~/.grok/skills/weekly-seo-status
-  seo-program-review:
-    bucket: B2
-    canonical: ~/01_code/pageseeds/.agents/skills/seo-program-review
-    install:
-      - ~/01_code/kimi-skills/kimi-code/skills/seo-program-review
-      - ~/.grok/skills/seo-program-review
+      - ~/01_code/kimi-skills/kimi-code/skills/pageseeds-run
+      - ~/.grok/skills/pageseeds-run
   video-clip:
     bucket: B2
     canonical: ~/01_code/pageseeds/.agents/skills/video-clip
