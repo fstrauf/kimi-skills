@@ -394,7 +394,7 @@ Focus on these files: <comma-separated paths>
 
 Issue spec (from issue #<issue_number>, verbatim): <contents of spec_file>
 Use `## Reuse` to judge duplication: re-implementing a listed helper is a finding.
-Apply baseline §8 against the spec's `## Test plan` (or, when it has none: a new unit test FAILs unless the PR body justifies it per product AGENTS.md → Tests (a)/(b)/(c)): FAIL unit tests the test plan does not name, and mock-wiring/tautology tests; golden fixtures, E2E specs and edits to existing tests are exempt.
+Apply baseline §8 against the spec's `## Test plan` (or, when it has none: a new unit test FAILs unless the PR body justifies it per product AGENTS.md → Tests (a)/(b)/(c)): FAIL unit tests the test plan does not name, and mock-wiring/tautology tests; golden fixtures, E2E specs and edits to existing test cases are exempt (new cases added to an existing test file are not).
 Correctness and spec compliance are judged by a separate verifier. Do not report them.
 
 You do not have a Skill tool — do NOT attempt to invoke /thermo-nuclear-code-quality-review or /skill:thermo-nuclear-code-quality-review.
@@ -435,13 +435,14 @@ Issue spec (verbatim): <contents of spec_file>
 Verification artifact (verbatim): <contents of artifact_file>
 PR body "Deviations from the spec": <paste>
 
-Correctness first. Trace every value the new code consumes to its producer (across services and languages in this repo) and state what it returns for no data, partial data, several entities and failure; types are not evidence. Existing behavior the diff newly relies on is in scope. Do not judge style or structure; another reviewer owns that.
+Correctness first. The spec's failure-mode list is already covered by the tests; look for what it missed. Trace every value the new code consumes to its producer (across services and languages in this repo) and state what it returns for no data, partial data, several entities and failure; types are not evidence. Where the new code re-derives something an existing path already computes (filter, extent, validation, as-of-date rule), compare the two: a rule the sibling applies and the new path drops is a finding unless the spec drops it. Existing behavior the diff newly relies on is in scope. Do not judge style or structure; another reviewer owns that.
 
 Your response must use this exact format:
 
 CORRECTNESS: PASS|FAIL
 - Producers traced: <call → producer file:line → what it returns for empty / partial / multi-entity / failure>
-- Edge classes: unknown-as-0 <ok|finding|n/a> · zero denominators <…> · multi-entity <…> · failure reported as success <…> · partial/transient failure commits or sends <…> · dry run writes <…> · timezones <…> · empty rows <…>
+- Sibling paths: <new code → existing path computing the same thing file:line → rules that differ> | none
+- Edge classes: unknown-as-0 <ok|finding|n/a> · zero denominators <…> · multi-entity <…> · partial set proceeds silently <…> · failure reported as success <…> · partial/transient failure commits or sends <…> · dry run writes <…> · timezones <…> · empty rows <…>
 1. [Only if FAIL] <file:line>: <bug>. Breaking input: <concrete input or state>. Wrong result: <what the user sees>. Suggested fix: <concrete change>.
 
 SPEC: PASS|FAIL
