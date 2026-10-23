@@ -29,7 +29,7 @@ When drafting, read **exactly two files**:
 | File | Role |
 |------|------|
 | The transcript (`voice_tier: transcript`) | The only source of substance |
-| `~/01_code/life/raw_data/articles/voice-profile.md` | The only style authority |
+| `~/01_code/learnedlate/articles/voice-profile.md` | The only style authority |
 
 Do **not** read AGENTS.md, other articles, or "similar pieces
 for rhythm". The voice profile already encodes everything those were consulted
@@ -42,7 +42,7 @@ genuinely doesn't cover, ask before widening context.
 
 ## Inputs
 
-- A transcript file under `~/01_code/life/raw_data/articles/draft/YYYY-MM-DD-<slug>-conversation.md`.
+- A transcript file under `~/01_code/learnedlate/articles/draft/YYYY-MM-DD-<slug>-conversation.md`.
   If the user doesn't name one, list recent `*-conversation.md` files and ask which.
 - Optionally: revision feedback on an existing draft (then the rules still come
   from the voice profile, not from the old draft).
@@ -65,7 +65,7 @@ genuinely doesn't cover, ask before widening context.
 ## Output (always files, never chat-only)
 
 Write the draft to
-`~/01_code/life/raw_data/articles/draft/YYYY-MM-DD-<slug>.md`
+`~/01_code/learnedlate/articles/draft/YYYY-MM-DD-<slug>.md`
 (new piece) or `…-vN.md` (regeneration — never overwrite a previous version;
 versions are how Florian calibrates the profile).
 

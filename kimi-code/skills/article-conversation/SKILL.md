@@ -24,13 +24,13 @@ Build, others). Do not assume the current repo is the writing workspace.
 
 ## Paths
 
-Content lives in the **life** workspace. The skill body lives here (edit this
+Content lives in the **learnedlate** repo (`~/01_code/learnedlate/articles/`; in a cloud session, `<learnedlate checkout>/articles/`). The skill body lives here (edit this
 file, never a symlink copy).
 
 | Asset | Path |
 |-------|------|
-| Drafts & transcripts | `~/01_code/life/raw_data/articles/draft/` |
-| Drafting (separate skill) | `/article-draft` — voice authority is `~/01_code/life/raw_data/articles/voice-profile.md` |
+| Drafts & transcripts | `~/01_code/learnedlate/articles/draft/` |
+| Drafting (separate skill) | `/article-draft` — voice authority is `~/01_code/learnedlate/articles/voice-profile.md` |
 | Interview technique | `references/interview-guide.md` (sibling of this file; resolve through any symlink) |
 
 This skill owns **interview + harvest** only. Style rules, drafting rules, and
@@ -40,14 +40,14 @@ don't copy.
 ### Always write markdown files (non-negotiable)
 
 Every session artifact that is more than chat banter **must** be written to disk under
-`~/01_code/life/raw_data/articles/draft/`. Do **not** leave drafts or harvest
+`~/01_code/learnedlate/articles/draft/`. Do **not** leave drafts or harvest
 transcripts only in chat.
 
 | Artifact | Required path |
 |----------|----------------|
-| Conversation transcript | `~/01_code/life/raw_data/articles/draft/YYYY-MM-DD-<slug>-conversation.md` |
+| Conversation transcript | `~/01_code/learnedlate/articles/draft/YYYY-MM-DD-<slug>-conversation.md` |
 | Article draft | written by `/article-draft`, not this skill |
-| Parked later idea (optional) | `~/01_code/life/raw_data/articles/draft/YYYY-MM-DD-<slug>-stub.md` |
+| Parked later idea (optional) | `~/01_code/learnedlate/articles/draft/YYYY-MM-DD-<slug>-stub.md` |
 
 Revisions to the transcript (“you misheard X”) **update the transcript file** so
 the draft input stays true.
@@ -135,7 +135,7 @@ Before writing the article, produce a short **Harvest** the user can correct.
 #### Save transcript (best effort)
 If the session produced substantial Q&A, write:
 
-`~/01_code/life/raw_data/articles/draft/YYYY-MM-DD-<slug>-conversation.md`
+`~/01_code/learnedlate/articles/draft/YYYY-MM-DD-<slug>-conversation.md`
 
 With:
 - YAML front matter: `title`, `type: conversation`, `created`, `topic`, `status: raw`
@@ -201,7 +201,7 @@ Do not mark as published or move to `published/` unless he asks.
 
 A good session ends with a transcript that:
 
-- Exists as a real file at `~/01_code/life/raw_data/articles/draft/YYYY-MM-DD-<slug>-conversation.md` (not chat-only)
+- Exists as a real file at `~/01_code/learnedlate/articles/draft/YYYY-MM-DD-<slug>-conversation.md` (not chat-only)
 - Captures **his** words intact — a `/article-draft` run can rely on it alone
 - Has a harvest section naming the core thesis, storyline, verbatim phrases, and do-not-invent list
 
