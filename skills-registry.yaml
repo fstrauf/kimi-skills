@@ -48,12 +48,6 @@ grok_config:
 
 skills:
   # ── A: universal (canonical = under universal root) ─────────────────────
-  article-conversation:
-    bucket: A
-    canonical: ~/01_code/kimi-skills/kimi-code/skills/article-conversation
-  article-draft:
-    bucket: A
-    canonical: ~/01_code/kimi-skills/kimi-code/skills/article-draft
   betterstack-error-triage:
     bucket: A
     canonical: ~/01_code/kimi-skills/kimi-code/skills/betterstack-error-triage
@@ -150,6 +144,19 @@ skills:
     install:
       - ~/01_code/kimi-skills/kimi-code/skills/growth-review
       - ~/.grok/skills/growth-review
+  article-conversation:
+    bucket: B2
+    notes: "Canonical in learnedlate so remote learnedlate sessions load it from .claude/skills"
+    canonical: ~/01_code/learnedlate/.claude/skills/article-conversation
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/article-conversation
+      - ~/.grok/skills/article-conversation
+  article-draft:
+    bucket: B2
+    notes: "Canonical in learnedlate; voice gate is learnedlate/articles/voice_check.py"
+    canonical: ~/01_code/learnedlate/.claude/skills/article-draft
+    install:
+      - ~/01_code/kimi-skills/kimi-code/skills/article-draft
   pr-batch-review:
     bucket: B2
     notes: "Written in pageseeds (c571ddbe); kimi-skills held a real copy predating the 533f334c fix"
