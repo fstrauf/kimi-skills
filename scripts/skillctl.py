@@ -291,7 +291,7 @@ def scan_skill_roots() -> dict[str, list[dict]]:
         for repo in code.iterdir():
             if not repo.is_dir() or repo.name.startswith("."):
                 continue
-            for rel in (".agents/skills", ".grok/skills", ".kimi/skills"):
+            for rel in (".agents/skills", ".claude/skills", ".grok/skills", ".kimi/skills"):
                 p = repo / rel
                 if p.exists():
                     roots.append(p)
