@@ -3,8 +3,8 @@ name: gh-scope-issue
 description: >-
   Deep-groom a rough GitHub issue into a build-ready spec: codebase deep dive
   after the initial brain dump, deletion-first simplification, architecture and
-  documentation fit, root-cause (not symptom) fix, the existing helpers to reuse,
-  file matrix, checkable acceptance criteria, and a failure-mode-first test
+  documentation fit, root-cause (not symptom) fix, the existing helpers to reuse
+  and patterns to follow (better ideas become follow-up refactor issues), file matrix, checkable acceptance criteria, and a failure-mode-first test
   contract (tests pin decisions only, size budget, red-first reproduction for
   bugs, E2E-preferred, verifiable artifact, no post-hoc or per-method tests).
   Spec length scales with size. REST labels only
@@ -55,7 +55,7 @@ Skip: titles `Epic:` / `[Epic]`; issues labeled `ready`, `agent-working`, `agent
 
 ## Hard limits
 
-1. **No product code** — issue metadata only.
+1. **No product code** — issue metadata only, plus follow-up refactor issues (*Follow existing patterns*).
 2. **No data-modifying SQL.**
 3. **Never close** without user confirmation (delete-candidates: recommend only).
 4. **Archive the original body** in `<details>` at the bottom.
@@ -68,6 +68,17 @@ Skip: titles `Epic:` / `[Epic]`; issues labeled `ready`, `agent-working`, `agent
 - **Root-cause fix** = change the layer that owns the invariant so the bad state cannot recur.
 
 Name: violated invariant + `file:line` where invalid state is **created**. If you cannot, keep investigating or mark `needs-input` — do not invent a design on an unnamed cause. Do **not** use `blocked` for missing sibling work.
+
+## Follow existing patterns (non-negotiable)
+
+Main usually already has a way to do this kind of change: how a route is added, how errors surface, how data is fetched, where config lives, how a job is scheduled. The spec follows it. Two ways of doing the same thing on main is worse than one mediocre way.
+
+- **Find the precedent.** For each kind of thing the change adds (endpoint, component, query, job, migration, CLI command…), find the closest existing example and record it under `## Reuse` as a **Follow** entry: `path:line` plus what to copy (layering, error handling, naming, file location).
+- **Follow it unless the new way is significantly better.** Significant means a concrete, nameable gain: a bug class removed, real duplication deleted, a measured cost. Taste, novelty and "more modern" don't count.
+- **Even when it is better, this ticket follows the existing pattern.** File the better approach as a follow-up refactor issue ([docs/github-loop.md → Follow-up issues](../../../docs/github-loop.md#follow-up-issues-pattern-refactors)) and list it under `## Non-goals` (`Refactor of <pattern>: #N`).
+- **Exception: the pattern is the root cause.** When the bug lives in the pattern itself, fixing it is the ticket. Say so under Root cause and list every call site in the file matrix, or file the call sites you leave out as a follow-up.
+- **Two competing patterns:** name the canonical one (documented in `AGENTS.md`, then most used, then most recent) and say why.
+- Precedent this skill forbids elsewhere (per-method tests, *Test contract* §8) is never a pattern to follow.
 
 ## Test contract (non-negotiable)
 
@@ -146,7 +157,7 @@ Same queue as `scope-all.sh` (`pr-orchestrator-generic/scope_queue.py`): open is
 
 1. **Find where the problem is produced**, not only where it is noticed.
 2. Explore with tools (and 1–2 explore subagents if useful, cost role `explore`: `python3 "${ORCH_ROUTING_TOOL:-$HOME/.kimi-code/skills/pr-orchestrator-generic/routing.py}" route explore --host "$ORCH_HOST"`; on Claude that is `Agent(subagent_type=loop-explorer)` with the routed model): call paths, existing modules that already do ≥80% of the ask, drift/duplication. Keep raw file reading in the subagents and bring back only `file:line` conclusions.
-3. **Reuse inventory:** every existing helper, module, type or pattern the change should call or extend, with `file:line` and what it owns. This becomes `## Reuse`. If two near-duplicates exist, name the canonical one. **Sibling rules:** when the change re-derives something an existing path already computes (a filter, an extent, a validation, an as-of-date rule), name that path and list the rules the new one must match. For example: "the renderer only keeps orchards effective on the print date (`file:line`)", or "the orchard extent throws on unmapped blocks (`file:line`)". Both #945 gaps were sibling rules the new path dropped.
+3. **Reuse inventory:** every existing helper, module or type the change should call or extend (**Call**), with `file:line` and what it owns, and the closest existing example of each kind of thing the change adds (**Follow**, per *Follow existing patterns*). This becomes `## Reuse`. If two near-duplicates exist, name the canonical one. **Sibling rules:** when the change re-derives something an existing path already computes (a filter, an extent, a validation, an as-of-date rule), name that path and list the rules the new one must match. For example: "the renderer only keeps orchards effective on the print date (`file:line`)", or "the orchard extent throws on unmapped blocks (`file:line`)". Both #945 gaps were sibling rules the new path dropped.
 4. **Architecture fit:** Which module owns this? Extend it vs new parallel path? Does the fix sit in the right layer?
 5. **Documentation fit:** Primary docs for the area — contradicts / extends / clarifies / untouched? If contract changes, ticket must require doc updates or `NOTE:`/`BUSINESS RULE:` comments. If no docs, say so — do not invent a mandatory doc index for repos that lack one. For an HTTP API change, also identify the product repository's canonical OpenAPI file and validation command; do not require OpenAPI for non-API work.
 6. Write symptom-vs-origin explicitly.
@@ -173,7 +184,7 @@ Use [references/spec-template.md](references/spec-template.md): the **short form
 
 Required in every form:
 
-- **`## Reuse`** — from the Phase 3 inventory; `path:line` + what it owns. Write `_None — greenfield_` only when you searched and nothing fits, and say what you searched.
+- **`## Reuse`** — from the Phase 3 inventory: **Call** entries (`path:line` + what it owns) and **Follow** entries (`path:line` + what to copy). Write `_None — greenfield_` only when you searched and nothing fits, and say what you searched.
 - **`## Implementation sketch`** (M/L) — key signatures and data shapes and which file/layer each goes in. No full code: a sketch longer than the change has written the code.
 - **`## Test plan`** — per the Test contract: failure modes, then only the scenarios that earn a test, each tagged (a)/(b)/(c) and within the size budget; red-first reproduction for bugs, browser check for visual bugs, artifact.
 - **`## Acceptance criteria`** — each criterion names how it's checked (command, E2E step, or observable artifact). The verifier quotes them one by one. Acceptance must include: the fix addresses the origin (`file:line`), not only the symptom; the test plan's artifact is reproducible by re-running the documented command(s); unit tests written after the implementation are **not** the proof. When `API change: yes`, also: the OpenAPI document describes the boundary and the repo's contract validation passes.
@@ -183,8 +194,9 @@ Required in every form:
 
 1. `gh issue edit N --body-file …`
 2. Milestone if assigned.
-3. Short comment: premise verdict, origin, deleted scope, estimate.
-4. Labels per *Labels and queue* above. `scope-loop` after success removes `scoping` and adds `ready` **unless** the issue has `blocked` or `needs-input`.
+3. Follow-up refactor issues per [docs/github-loop.md → Follow-up issues](../../../docs/github-loop.md#follow-up-issues-pattern-refactors) (dedupe first); put their numbers under `## Non-goals`.
+4. Short comment: premise verdict, origin, deleted scope, follow-ups filed, estimate.
+5. Labels per *Labels and queue* above. `scope-loop` after success removes `scoping` and adds `ready` **unless** the issue has `blocked` or `needs-input`.
 
 ## Anti-patterns (fail the skill)
 
@@ -192,6 +204,7 @@ Required in every form:
 - Expanding scope (“while we’re here…”)
 - Rubber-stamping a wrong solution because the ticket asked for it
 - Shipping architecture that duplicates an existing module, or omitting `## Reuse` so the implementer re-invents one
+- A spec that adds a second way of doing something main already does, without a significant named gain; or one that switches pattern inside the ticket instead of filing a follow-up
 - A full-form 10k-character spec for an `S` change
 - A bug ticket whose first test can't go red on today's main; a visual bug "proven" by jsdom
 - Acceptance criteria with no named check
@@ -216,4 +229,4 @@ Required in every form:
 
 ## Report to user
 
-Number, title, URL · outcome · premises confirmed/wrong · origin `file:line` · reuse list · what was deleted · architecture/doc fit one-liners · estimate · labels · next: `pr-loop` if ready.
+Number, title, URL · outcome · premises confirmed/wrong · origin `file:line` · reuse list (Call / Follow) · follow-up issues filed · what was deleted · architecture/doc fit one-liners · estimate · labels · next: `pr-loop` if ready.

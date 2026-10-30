@@ -15,7 +15,8 @@ Soft cap ~3k characters. A 30-line change does not need a 10k-character spec.
 ## Five-question filter
 1. Requirement: … 2. Delete: … 3. Simplify: … 4. Accelerate: … 5. Automate: …   (one line each)
 ## Reuse
-- `path:line` — <helper/module> owns <what>; call it, don't re-implement
+- Call: `path:line` — <helper/module> owns <what>; call it, don't re-implement
+- Follow: `path:line` — <closest existing example>; copy its <layering / error handling / naming / location>
 ## Proposed change (minimal)
 ## File change matrix
 ## Test plan
@@ -45,7 +46,9 @@ Add the API contract section only when the issue changes an HTTP API.
 ### Symptom vs. origin
 ## Five-question filter
 ## Reuse
-- `path:line` — <helper/module/pattern> owns <what>; the implementer must call or extend it
+- Call: `path:line` — <helper/module> owns <what>; the implementer must call or extend it
+- Follow: `path:line` — <closest existing example>; copy its <layering / error handling / naming / location>
+<!-- A better approach than an existing pattern is a follow-up issue listed under Non-goals, not a change here. -->
 ## Proposed change (minimal)
 ## Implementation sketch
 <!-- Key signatures and data shapes, and which file/layer each lives in.
@@ -70,6 +73,7 @@ Add the API contract section only when the issue changes an HTTP API.
      bugs: browser-level check + screenshot/trace. Fake-backed tests are
      isolation tests, not E2E, and come out of the same budget. -->
 ## Non-goals
+- Refactor of <pattern>: #N   (follow-up issues, if any)
 ## Acceptance criteria
 - [ ] <criterion> — checked by: <command / E2E step / observable artifact>
 ## QA / verification
