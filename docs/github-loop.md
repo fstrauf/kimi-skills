@@ -120,6 +120,22 @@ Do **not**:
 
 That DAG opens two PRs against #269 and GitHub will only stack one of them.
 
+## Follow-up issues (pattern refactors)
+
+A ticket follows the patterns main already uses. When an agent finds an existing pattern it thinks is significantly worse than an alternative, the current ticket **still follows it**, and the better approach becomes its own issue. Raised by the scoper, the implementer (`FOLLOW-UP:` in its return) or the structure reviewer (`FOLLOW-UP:` under NOTES). Filed by the scoper or the pr-loop coordinator.
+
+| Rule | Why |
+|------|-----|
+| **No labels.** It enters the scope queue like any raw idea | scope-loop decides: delete candidate, `needs-input`, or `ready` |
+| Title `Refactor: <pattern> — <better approach>` | One search key for dedupe |
+| Body: the pattern (`path:line`, call sites if known), the better approach, the concrete gain (bug class removed, duplication deleted, measured cost), `Found while: #N` (and `PR #M`) | Concrete gain is the bar; taste and "more modern" are not |
+| **Dedupe first:** `gh issue list --state open --search "in:title Refactor: <pattern keyword>"`. A match gets a comment with the new evidence instead | No pile of near-duplicate refactor tickets |
+| Never `## Depends on` from the origin issue, never `ready` on filing | The origin ships on the existing pattern; the refactor is optional work |
+
+```bash
+gh issue create --title "Refactor: <pattern> — <better approach>" --body "<body per the table>"
+```
+
 ## Commands
 
 Profiles live in `kimi-code/skills/pr-orchestrator-generic/profiles/<name>.env` (`REPO`, `REPO_DIR`, merge flags). Same profile for scope and ship.

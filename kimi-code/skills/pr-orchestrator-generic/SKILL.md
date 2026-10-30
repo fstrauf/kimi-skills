@@ -219,16 +219,18 @@ Required semantics:
 1. Spawn an **implementer subagent** (role `implement`, see *Cost routing*; per-host spawn notes in references/hosts.md) with a complete brief:
     - Issue number, title, and `spec_file`
     - Relevant file paths
-    - Follow `AGENTS.md`; minimal scoped changes. Call the helpers listed in `## Reuse`; do not re-implement what they own. Follow `## Implementation sketch` when present.
+    - Follow `AGENTS.md`; minimal scoped changes. Call the helpers listed in `## Reuse`; do not re-implement what they own. Copy the shape of its **Follow** examples. Follow `## Implementation sketch` when present.
+    - **Existing patterns:** for anything the spec doesn't cover, find the nearest existing example in the repo and copy its shape before writing new code. If an existing pattern looks significantly worse than an alternative, still follow it and return a `FOLLOW-UP: <pattern path:line> — <better approach> — <concrete gain>` line. Diverge only where the spec says to.
     - If the issue declares `API change: yes`, update the named OpenAPI file and implementation together; preserve the declared compatibility behavior
     - **Red first for bugs:** run the Test plan's reproduction on the base branch and confirm it fails *before* changing code. If it passes on the base branch, the reproduction is wrong: fix the reproduction (or report `needs-input` if the bug can't be reproduced) before touching product code.
     - **Visual / layout bugs:** the reproduction is browser-level (Playwright or the repo's equivalent) and saves a screenshot or trace. jsdom or unit tests are not proof of a layout fix.
     - Tests: implement exactly the scoped issue's `## Test plan` / `## QA / verification` contract — nothing more. **Do not add unit tests beyond what the scope agreed**, and add none at all when the contract names none. Targeted runs only; **do not** run `pnpm test:all` / full build
-    - Return: summary of changes, changed files, commit SHAs, open questions, and the **verification artifact**: the exact command(s), the red result on the base branch (bugs), the green result on the branch, and any artifact path (output file, screenshot, trace, response snapshot)
+    - Return: summary of changes, changed files, commit SHAs, open questions, `FOLLOW-UP:` lines (if any), and the **verification artifact**: the exact command(s), the red result on the base branch (bugs), the green result on the branch, and any artifact path (output file, screenshot, trace, response snapshot)
 2. Inspect:
    - `git status --short`
    - `git log --oneline -5` and/or `git diff --stat "origin/$BASE...HEAD"`
 3. If there are no changes, stop and report that the implementer produced no diff.
+   File each returned `FOLLOW-UP:` line as a follow-up issue per [docs/github-loop.md → Follow-up issues](../../../docs/github-loop.md#follow-up-issues-pattern-refactors) (dedupe first; `Found while: #<N>`).
 4. Run any targeted tests the subagent skipped (commands from `AGENTS.md`).
 5. If those fail, spawn a fix subagent (role `fix`; hand long failure output to role `triage` first) before continuing.
 6. **Verification artifact gate.** If the Test plan names a command or E2E and the implementer returned no green run of it (or no red run for a bug ticket), spawn a fix subagent once to produce it. Then write `artifact_file`: command(s), red result, green result, artifact paths. If it is still missing, write `artifact: missing — <reason>` and continue; the verifier FAILs it in Phase 4.
@@ -283,7 +285,7 @@ Closes #<N>
 <brief summary of changes>
 
 ## Deviations from the spec
-<files or behavior outside ## File change matrix / ## Proposed change, each with the reason — or "None">
+<files or behavior outside ## File change matrix / ## Proposed change, or departures from an existing repo pattern, each with the reason — or "None">
 
 ## Automated gates
 React control scan (react-doctor + shadscan) already ran on the branch.
@@ -369,6 +371,8 @@ WHILE true:
        - structure reviewer (role `review`, `--review-iter N`; prompt below)
        - verifier (role `verify`, `--review-iter N`; prompt below)
   7. Parse the reviewer's BASELINE + VERDICT and the verifier's VERDICT.
+     File any `FOLLOW-UP:` lines from the reviewer's NOTES as follow-up issues
+     (same rule as Phase 2; `Found while: #<issue>, PR #<pr>`). Never a fix item.
   8. If both PASS:
        - Post passing PR comment (both verdicts)
        - Break
@@ -393,7 +397,7 @@ Focus on these files: <comma-separated paths>
 <Iteration ≥ 2 only:> Fix range since your last review: <prev_head>..HEAD. Previous findings (confirm each is resolved): <paste the previous Structure findings>
 
 Issue spec (from issue #<issue_number>, verbatim): <contents of spec_file>
-Use `## Reuse` to judge duplication: re-implementing a listed helper is a finding.
+Use `## Reuse` to judge duplication and pattern fit: re-implementing a Call helper is a finding, and so is doing something main already does a different way (its Follow examples, or the nearest existing example when `## Reuse` is silent) without a justified entry under the PR's "Deviations from the spec". If you think the existing pattern itself is worse, that is not a finding against this PR: put it under NOTES as `FOLLOW-UP: <pattern path:line> — <better approach> — <concrete gain>`.
 Apply baseline §8 against the spec's `## Test plan` (or, when it has none: a new unit test FAILs unless the PR body justifies it per product AGENTS.md → Tests (a)/(b)/(c)): FAIL unit tests the test plan does not name, and mock-wiring/tautology tests; golden fixtures, E2E specs and edits to existing test cases are exempt (new cases added to an existing test file are not).
 Correctness and spec compliance are judged by a separate verifier. Do not report them.
 
@@ -417,6 +421,7 @@ FINDINGS:
 
 NOTES:
 - Optional non-blocking observations.
+- FOLLOW-UP: <pattern path:line> — <better approach> — <concrete gain>   (only when an existing pattern is significantly worse)
 
 Be decisive. If previous findings have been addressed and no new structural blockers exist, output PASS. Do not introduce new low-severity findings in later iterations.
 Do not explain your reasoning outside these sections.
@@ -482,7 +487,7 @@ Read the latest review comments with: gh pr view <pr_number> --comments
 Focus on the comment marked "<!-- thermonuclear-review-iter-<iteration> -->".
 
 Spec and Correctness findings: change behavior exactly as each finding requires, and rerun the verification artifact command so it stays green (update the PR's verification-artifact comment if its result changed).
-Structure findings: do not change behavior; make minimal structural improvements as requested.
+Structure findings: do not change behavior; make minimal structural improvements as requested. Move code toward the repo's existing pattern; never introduce a new one.
 Do not add unit tests beyond the issue's `## Test plan`.
 Do NOT run pnpm test:all, pnpm build, or any full test/build suite.
 Commit and push your changes.
@@ -585,6 +590,7 @@ At the end of a successful run, report:
 - PR URL
 - Verification artifact (command, red → green)
 - Number of review iterations and both final verdicts
+- Follow-up issues filed (numbers), or none
 - Test result (`pnpm test:all` or project equivalent)
 - Host used (`kimi`, `grok`, `ori` or `claude`)
 - Note that the PR is ready for review

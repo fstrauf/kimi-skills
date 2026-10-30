@@ -29,6 +29,7 @@ Apply the baseline above, plus these explicit review rules:
 - Prefer the solution that makes the code feel inevitable in hindsight.
 - Assume there is often a "code judo" move available: a re-organization that uses the existing architecture more effectively and makes the change dramatically simpler and more elegant.
 - If there is a path to delete complexity rather than rearrange it, push hard for that path.
+- Code judo works inside the repo's existing patterns. Replacing an established pattern is a follow-up refactor, not a fix in this PR (§9).
 
 ### 1. No unjustified file bloat
 - Do not let a PR push a file from under 1,000 lines to over 1,000 lines without a very strong reason.
@@ -73,6 +74,12 @@ Apply the baseline above, plus these explicit review rules:
 - If the diff adds far more test code than product code without a scoped justification naming the failure modes covered, treat it as a finding: ask which failure mode each test covers and why an E2E test cannot reach it.
 - Do not reward "100% coverage" PRs. Coverage of AI-generated algorithmic code verifies the thing models already get right, expands LOC by orders of magnitude, and locks behavior down against future change — the failures that matter are second- and third-order system effects, which unit tests do not catch.
 
+### 9. Follow the repo's existing patterns
+- Before judging a new route, component, query, job or error path, open the nearest existing example of the same kind and compare.
+- A PR that does something main already does, but a different way, is a finding unless the scoped spec or the PR's stated deviations name a significant, concrete gain (a bug class removed, real duplication deleted, a measured cost). Taste and "more modern" are not a gain.
+- If you think the existing pattern itself is worse, do not ask this PR to switch. Recommend a separate refactor issue (the pattern's `path:line`, the better approach, the concrete gain) and keep it non-blocking. Two ways of doing the same thing is worse than one mediocre way.
+- Precedent that breaks another rule here (per-method tests, §8) is not a pattern to follow.
+
 ## Primary Review Questions
 
 For every meaningful change, ask:
@@ -89,6 +96,7 @@ For every meaningful change, ask:
 - Is this abstraction actually earning its keep, or is it just a wrapper?
 - Did the diff introduce casts, optionality, or ad-hoc object shapes that obscure the real invariant?
 - Is this logic living in the canonical layer, or did the diff leak details across a boundary?
+- Does the codebase already do this kind of thing a different way, and did the diff copy it?
 - Is this orchestration more sequential or less atomic than it needs to be?
 
 ## What to Flag Aggressively
@@ -194,6 +202,7 @@ Treat these as presumptive blockers unless the author can justify them clearly:
 - The PR solves a local problem by scattering feature checks across shared code.
 - The PR adds an unnecessary abstraction, wrapper, or cast-heavy contract that makes the design more indirect.
 - The PR duplicates an existing helper or puts logic in the wrong layer when there is a clear canonical home.
+- The PR introduces a second way of doing something the codebase already does, without a significant gain justified in the spec or the PR's deviations.
 - The PR adds unit tests not named in the scoped `## Test plan`, or mock-wiring/tautology tests (call-assert or SQL-substring as the main assertion; constants, defaults, re-exports). Golden fixtures, E2E specs and edits to existing test cases are exempt; new cases added to an existing test file are not.
 
 If those conditions are not met, leave explicit, actionable feedback and push for a cleaner decomposition.
